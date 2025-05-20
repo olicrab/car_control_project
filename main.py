@@ -1,50 +1,46 @@
-from car_controller import CarController
-from gamepad_controller import GamepadController
 import time
+import pygame
+from car_controller.car_controller import CarController
+from car_controller.gamepad_input import GamepadInput
 
-def main():
-    # Создаём объекты для управления машинкой и геймпадом
-    car = CarController('/dev/ttyUSB0')
-    gamepad = GamepadController()
+def main(input_type: str = "gamepad"):
+    # Инициализация pygame для обработки клавиатуры
+    pygame.init()
+
+    # Инициализация компонентов
+    controller = CarController('/dev/ttyUSB0')
+    input_device = GamepadInput(joystick_index=0)
+    input_device.initialize()
+
+    # Регистрация действий для бамперов
+    input_device.register_button_action(5, controller.increase_speed_mode)  # Левый бампер
+    input_device.register_button_action(4, controller.decrease_speed_mode)  # Правый бампер
 
     print("Управление машинкой с геймпадом:")
-    print("Используйте левый стик для поворотов.")
-    print("Триггеры для газа и тормоза.")
-    print("Нажмите на правый бампер для увеличения режима.")
-    print("Нажмите на левый бампер для уменьшения режима.")
-    print("Q - Выход")
+    print("Левый стик: поворот, триггеры: газ/тормоз, бамперы: смена режима, Q: выход")
 
     try:
         while True:
-            # Получаем ввод с геймпада
-            gas, brake, steering = gamepad.get_input()
-            button_left_bumper, button_right_bumper = gamepad.get_button_press()
+            gas, brake, steering, _, _ = input_device.get_input()
+            controller.update(gas, brake, steering)
 
-            # Обрабатываем бамперы для изменения режима
-            if button_right_bumper:
-                car.increase_speed_mode()
+            # Для отладки
+            print(f"Мотор: {controller.motor_value}, Серво: {controller.steering}")
 
-            if button_left_bumper:
-                car.decrease_speed_mode()
-
-            # Обновляем управление машинкой
-            car.update(gas, brake, steering)
-
-            # Для отладки выводим значения
-            print(f"Мотор: {car.motor_value}, Серво: {car.steering}")
-
-            # Выход по нажатию кнопки "Q"
-            if pygame.key.get_pressed()[pygame.K_q]:
+            # Проверка выхода по клавише Q
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_q]:
                 print("Выход из программы.")
                 break
 
-            time.sleep(0.05)  # Небольшая задержка для предотвращения дребезга
+            time.sleep(0.05)
 
     except KeyboardInterrupt:
         print("\nПрограмма завершена.")
     finally:
-        car.arduino.close()
+        controller.close()
+        input_device.close()
         pygame.quit()
 
 if __name__ == "__main__":
-    main()
+    main(input_type="gamepad")
