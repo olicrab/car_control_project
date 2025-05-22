@@ -16,7 +16,8 @@ class ZEDCameraInput(InputDevice):
         self.output_path = self._generate_output_path()
         self.show_window = False
         self.window_created = False
-        self.depth_threshold = 0.6  # Минимальное расстояние для торможения
+        self.depth_threshold = 0.6
+        self.steering_trim = 0.0  # Корректировка руля
 
     def _generate_output_path(self) -> str:
         timestamp = int(time.time())
@@ -109,6 +110,8 @@ class ZEDCameraInput(InputDevice):
             cv2.waitKey(1)
 
         speed, brake, steering = self.process_frame(frame, depth_data)
+        # Применяем trim к steering
+        steering = max(-0.5, min(0.5, steering + self.steering_trim))
         return speed, brake, steering, False, False
 
     def set_window_visible(self, visible: bool) -> None:
@@ -129,6 +132,11 @@ class ZEDCameraInput(InputDevice):
                 self.window_created = False
             except cv2.error:
                 pass
+
+    def set_steering_trim(self, trim: float) -> None:
+        """Устанавливает значение trim (для синхронизации с геймпадом)."""
+        self.steering_trim = trim
+        print(f"Trim установлен: {self.steering_trim:.3f}")
 
     def process_frame(self, frame, depth_data):
         height, width = depth_data.shape

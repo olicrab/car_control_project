@@ -32,13 +32,8 @@ class CarController:
         self.adapter.decrease_gear()
 
     def update(self, speed: float, brake: float, steering: float) -> None:
-        """Обновляет управление. Brake приоритетнее speed, steering сохраняется."""
-        if brake > 0.0:
-            self.motor_value = 90  # Нейтраль (остановка)
-            # steering остаётся тем, что передано
-            _, self.steering = self.adapter.convert_commands(0.0, steering)
-        else:
-            self.motor_value, self.steering = self.adapter.convert_commands(speed, steering)
+        """Обновляет управление. Brake использует обратное направление."""
+        self.motor_value, self.steering = self.adapter.convert_commands(speed, brake, steering)
         self.send_command(self.motor_value, self.steering)
 
     def send_command(self, motor_value: int, steering_value: int) -> None:
