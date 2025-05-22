@@ -1,0 +1,185 @@
+import cv2
+import time
+import os
+import numpy as np
+import pyzed.sl as sl
+from .input_device import InputDevice
+from typing import Tuple
+
+class ZEDCameraInput(InputDevice):
+    def __init__(self):
+        self.zed = None
+        self.window_name = "ZED Camera Feed"
+        self.recording = False
+        self.out = None
+        self.output_dir = os.path.dirname(__file__)
+        self.output_path = self._generate_output_path()
+        self.show_window = False
+        self.window_created = False
+        self.depth_threshold = 1.0  # Порог расстояния до препятствия (метры)
+
+    def _generate_output_path(self) -> str:
+        """Генерирует уникальный путь для сохранения видео."""
+        timestamp = int(time.time())
+        return os.path.join(self.output_dir, f"output_{timestamp}.avi")
+
+    def initialize(self) -> None:
+        """Инициализирует ZED-камеру."""
+        self.close()
+
+        self.zed = sl.Camera()
+        init_params = sl.InitParameters()
+        init_params.camera_resolution = sl.RESOLUTION.HD720  # 1280x720
+        init_params.camera_fps = 30
+        init_params.depth_mode = sl.DEPTH_MODE.PERFORMANCE  # Быстрый режим
+        init_params.coordinate_units = sl.UNIT.METER
+        init_params.sdk_verbose = 1
+
+        err = self.zed.open(init_params)
+        if err != sl.ERROR_CODE.SUCCESS:
+            raise RuntimeError(f"Ошибка открытия ZED-камеры: {err}")
+
+        camera_info = self.zed.get_camera_information()
+        width = camera_info.camera_configuration.resolution.width
+        height = camera_info.camera_configuration.resolution.height
+        fps = camera_info.camera_configuration.fps
+        print(f"ZED-камера инициализирована. Разрешение: {width}x{height}, FPS: {fps}")
+
+    def toggle_recording(self) -> None:
+        """Запускает или останавливает запись видео."""
+        if not self.recording:
+            if not self.zed or not self.zed.is_opened():
+                print("Ошибка: ZED-камера не инициализирована, запись невозможна")
+                return
+
+            if not os.access(self.output_dir, os.W_OK):
+                print(f"Ошибка: Нет прав на запись в директорию {self.output_dir}")
+                return
+
+            width = self.zed.get_camera_information().camera_configuration.resolution.width
+            height = self.zed.get_camera_information().camera_configuration.resolution.height
+            fps = self.zed.get_camera_information().camera_configuration.fps or 20.0
+            codecs = ['XVID', 'MJPG', 'H264', 'DIVX']
+            for codec in codecs:
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                self.out = cv2.VideoWriter(self.output_path, fourcc, fps, (width, height))
+                if self.out.isOpened():
+                    print(f"VideoWriter открыт с кодеком {codec}, путь: {self.output_path}")
+                    break
+                print(f"Предупреждение: Кодек {codec} не сработал, пробуем другой")
+            else:
+                print("Ошибка: Не удалось инициализировать VideoWriter")
+                self.out = None
+                return
+
+            self.recording = True
+            print(f"Запись начата: {self.output_path}")
+        else:
+            if self.out is not None and self.out.isOpened():
+                self.out.release()
+                print("VideoWriter закрыт")
+            self.out = None
+            self.recording = False
+            if os.path.exists(self.output_path) and os.path.getsize(self.output_path) > 0:
+                print(f"Запись сохранена: {self.output_path}, размер: {os.path.getsize(self.output_path)} байт")
+            else:
+                print(f"Ошибка: Файл записи пуст или не создан: {self.output_path}")
+            self.output_path = self._generate_output_path()
+
+    def get_input(self) -> Tuple[float, float, float, bool, bool]:
+        """Получает кадр и карту глубины, возвращает команды управления."""
+        if not self.zed or not self.zed.is_opened():
+            print("Ошибка: ZED-камера не инициализирована")
+            return 0.0, 0.0, 0.0, False, False
+
+        image_zed = sl.Mat()
+        depth_zed = sl.Mat()
+        runtime_params = sl.RuntimeParameters()
+        if self.zed.grab(runtime_params) != sl.ERROR_CODE.SUCCESS:
+            print("Ошибка: Не удалось захватить кадр с ZED")
+            return 0.0, 0.0, 0.0, False, False
+
+        self.zed.retrieve_image(image_zed, sl.VIEW.LEFT)
+        self.zed.retrieve_measure(depth_zed, sl.MEASURE.DEPTH)
+        frame = image_zed.get_data()[:, :, :3]  # RGB без альфа-канала
+        depth_data = depth_zed.get_data()
+
+        if self.recording and self.out is not None and self.out.isOpened():
+            self.out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            print(f"Кадр записан: {frame.shape}, путь: {self.output_path}")
+
+        if self.show_window and self.window_created:
+            depth_display = depth_data.copy()
+            depth_display[np.isinf(depth_display)] = 0
+            depth_display = cv2.normalize(depth_display, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            cv2.imshow(self.window_name, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            cv2.imshow("Depth Map", depth_display)
+            cv2.waitKey(1)
+
+        gas, brake, steering = self.process_frame(frame, depth_data)
+        return gas, brake, steering, False, False
+
+    def set_window_visible(self, visible: bool) -> None:
+        """Управляет отображением окна камеры."""
+        self.show_window = visible
+        if visible and self.zed and self.zed.is_opened():
+            if not self.window_created:
+                width = self.zed.get_camera_information().camera_configuration.resolution.width
+                height = self.zed.get_camera_information().camera_configuration.resolution.height
+                cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+                cv2.namedWindow("Depth Map", cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(self.window_name, width, height)
+                cv2.resizeWindow("Depth Map", width, height)
+                self.window_created = True
+        elif not visible and self.window_created:
+            try:
+                cv2.destroyWindow(self.window_name)
+                cv2.destroyWindow("Depth Map")
+                self.window_created = False
+            except cv2.error:
+                pass
+
+    def process_frame(self, frame, depth_data):
+        """Обрабатывает кадр и карту глубины для управления."""
+        height, width = depth_data.shape
+        roi_height = int(height * 0.2)
+        roi_width = int(width * 0.2)
+        center_y = height // 2
+        center_x = width // 2
+        roi = depth_data[center_y - roi_height // 2:center_y + roi_height // 2,
+                         center_x - roi_width // 2:center_x + roi_width // 2]
+
+        valid_depth = roi[np.isfinite(roi) & (roi > 0)]
+        if valid_depth.size == 0:
+            print("Нет валидных данных глубины в ROI")
+            return 0.0, 0.0, 0.0
+
+        min_distance = np.min(valid_depth)
+        print(f"Минимальное расстояние: {min_distance:.2f} м")
+
+        if min_distance < self.depth_threshold:
+            gas = 0.0
+            brake = 1.0
+            steering = 0.0
+        else:
+            gas = 0.3
+            brake = 0.0
+            steering = 0.0
+
+        return gas, brake, steering
+
+    def close(self) -> None:
+        """Закрывает ZED-камеру и освобождает ресурсы."""
+        if self.recording:
+            self.toggle_recording()
+        if self.zed is not None:
+            self.zed.close()
+            self.zed = None
+        if self.window_created:
+            try:
+                cv2.destroyWindow(self.window_name)
+                cv2.destroyWindow("Depth Map")
+                self.window_created = False
+            except cv2.error:
+                pass
+        print("ZED-камера закрыта.")

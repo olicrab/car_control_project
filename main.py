@@ -4,6 +4,7 @@ import cv2
 from car_controller.car_controller import CarController
 from car_controller.gamepad_input import GamepadInput
 from car_controller.camera_input import CameraInput
+from car_controller.zed_camera_input import ZEDCameraInput
 
 def main():
     pygame.init()
@@ -11,7 +12,8 @@ def main():
     # Инициализация компонентов
     controller = CarController('/dev/ttyUSB0')
     gamepad_input = GamepadInput(joystick_index=0)
-    camera_input = CameraInput(device=0)
+    # Используем ZEDCameraInput для автопилота
+    camera_input = ZEDCameraInput()  # Можно переключить на CameraInput для обычной камеры
 
     # Инициализация геймпада
     try:
@@ -37,7 +39,7 @@ def main():
         nonlocal is_gamepad_mode
         is_gamepad_mode = not is_gamepad_mode
         camera_input.set_window_visible(not is_gamepad_mode)
-        print(f"Режим ввода: {'геймпад' if is_gamepad_mode else 'камера'}")
+        print(f"Режим ввода: {'геймпад' if is_gamepad_mode else 'ZED-автопилот'}")
 
     gamepad_input.register_button_action(5, controller.increase_speed_mode)  # Левый бампер
     gamepad_input.register_button_action(4, controller.decrease_speed_mode)  # Правый бампер
@@ -64,7 +66,7 @@ def main():
 
             controller.update(gas, brake, steering)
 
-            # print(f"Мотор: {controller.motor_value}, Серво: {controller.steering}")
+            print(f"Мотор: {controller.motor_value}, Серво: {controller.steering}")
 
             # Проверка выхода по клавише Q
             if pygame.get_init():
@@ -73,10 +75,10 @@ def main():
                     print("Выход из программы.")
                     break
 
-            # Обработка событий OpenCV в режиме камеры
+            # Обработка событий OpenCV в режиме автопилота
             if not is_gamepad_mode:
                 if cv2.waitKey(1) & 0xFF == ord('q'):
-                    print("Выход по клавише 'q' из режима камеры")
+                    print("Выход по клавише 'q' из режима автопилота")
                     toggle_input_mode()
 
             time.sleep(0.05)
@@ -85,7 +87,7 @@ def main():
         print("\nПрограмма завершена.")
     finally:
         if camera_input.recording:
-            camera_input.toggle_recording()  # Завершаем запись
+            camera_input.toggle_recording()
         controller.close()
         gamepad_input.close()
         camera_input.close()
