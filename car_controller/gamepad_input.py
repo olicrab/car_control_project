@@ -23,25 +23,25 @@ class GamepadInput(InputDevice):
         self.button_handler.register_action(button_id, action)
 
     def get_input(self) -> Tuple[float, float, float, bool, bool]:
-        """Получает данные с геймпада и обрабатывает кнопки."""
+        """Получает данные с геймпада: правый триггер — газ, левый — тормоз."""
         pygame.event.pump()
-        left_trigger = (self.joystick.get_axis(2) + 1) / 2  # Левая триггера (ось 2)
-        right_trigger = (self.joystick.get_axis(5) + 1) / 2  # Правая триггера (ось 5)
-        stick_x = self.joystick.get_axis(0)  # Левый стик (влево/вправо)
+        right_trigger = (self.joystick.get_axis(5) + 1) / 2  # Правая триггера (газ)
+        left_trigger = (self.joystick.get_axis(2) + 1) / 2   # Левая триггера (тормоз)
+        stick_x = self.joystick.get_axis(0)                  # Левый стик (руль)
 
-        # Собираем состояния кнопок
+        speed = right_trigger
+        brake = left_trigger
+
         button_states = {
-            4: self.joystick.get_button(4),  # Правый бампер
-            5: self.joystick.get_button(5),  # Левый бампер
-            7: self.joystick.get_button(7),  # Кнопка Start
-            0: self.joystick.get_button(0),  # Кнопка A
+            4: self.joystick.get_button(4),  # Правый бампер (уменьшить передачу)
+            5: self.joystick.get_button(5),  # Левый бампер (увеличить передачу)
+            7: self.joystick.get_button(7),  # Кнопка Start (переключение режима)
+            0: self.joystick.get_button(0),  # Кнопка A (запись)
+            1: self.joystick.get_button(1),  # Кнопка B (задняя передача)
         }
 
-        # Обрабатываем кнопки через обработчик
         self.button_handler.handle_buttons(button_states)
-
-        # Возвращаем данные для управления и заглушки для increase_speed/decrease_speed
-        return right_trigger, left_trigger, stick_x, False, False
+        return speed, brake, stick_x, False, False
 
     def close(self) -> None:
         """Отключает геймпад, но не деинициализирует Pygame."""

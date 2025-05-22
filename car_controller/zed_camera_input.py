@@ -16,22 +16,19 @@ class ZEDCameraInput(InputDevice):
         self.output_path = self._generate_output_path()
         self.show_window = False
         self.window_created = False
-        self.depth_threshold = 1.0  # Порог расстояния до препятствия (метры)
+        self.depth_threshold = 0.6  # Минимальное расстояние для торможения
 
     def _generate_output_path(self) -> str:
-        """Генерирует уникальный путь для сохранения видео."""
         timestamp = int(time.time())
         return os.path.join(self.output_dir, f"output_{timestamp}.avi")
 
     def initialize(self) -> None:
-        """Инициализирует ZED-камеру."""
         self.close()
-
         self.zed = sl.Camera()
         init_params = sl.InitParameters()
-        init_params.camera_resolution = sl.RESOLUTION.HD720  # 1280x720
+        init_params.camera_resolution = sl.RESOLUTION.HD720
         init_params.camera_fps = 30
-        init_params.depth_mode = sl.DEPTH_MODE.PERFORMANCE  # Быстрый режим
+        init_params.depth_mode = sl.DEPTH_MODE.PERFORMANCE
         init_params.coordinate_units = sl.UNIT.METER
         init_params.sdk_verbose = 1
 
@@ -46,16 +43,13 @@ class ZEDCameraInput(InputDevice):
         print(f"ZED-камера инициализирована. Разрешение: {width}x{height}, FPS: {fps}")
 
     def toggle_recording(self) -> None:
-        """Запускает или останавливает запись видео."""
         if not self.recording:
             if not self.zed or not self.zed.is_opened():
                 print("Ошибка: ZED-камера не инициализирована, запись невозможна")
                 return
-
             if not os.access(self.output_dir, os.W_OK):
                 print(f"Ошибка: Нет прав на запись в директорию {self.output_dir}")
                 return
-
             width = self.zed.get_camera_information().camera_configuration.resolution.width
             height = self.zed.get_camera_information().camera_configuration.resolution.height
             fps = self.zed.get_camera_information().camera_configuration.fps or 20.0
@@ -71,7 +65,6 @@ class ZEDCameraInput(InputDevice):
                 print("Ошибка: Не удалось инициализировать VideoWriter")
                 self.out = None
                 return
-
             self.recording = True
             print(f"Запись начата: {self.output_path}")
         else:
@@ -87,7 +80,6 @@ class ZEDCameraInput(InputDevice):
             self.output_path = self._generate_output_path()
 
     def get_input(self) -> Tuple[float, float, float, bool, bool]:
-        """Получает кадр и карту глубины, возвращает команды управления."""
         if not self.zed or not self.zed.is_opened():
             print("Ошибка: ZED-камера не инициализирована")
             return 0.0, 0.0, 0.0, False, False
@@ -101,7 +93,7 @@ class ZEDCameraInput(InputDevice):
 
         self.zed.retrieve_image(image_zed, sl.VIEW.LEFT)
         self.zed.retrieve_measure(depth_zed, sl.MEASURE.DEPTH)
-        frame = image_zed.get_data()[:, :, :3]  # RGB без альфа-канала
+        frame = image_zed.get_data()[:, :, :3]
         depth_data = depth_zed.get_data()
 
         if self.recording and self.out is not None and self.out.isOpened():
@@ -116,11 +108,10 @@ class ZEDCameraInput(InputDevice):
             cv2.imshow("Depth Map", depth_display)
             cv2.waitKey(1)
 
-        gas, brake, steering = self.process_frame(frame, depth_data)
-        return gas, brake, steering, False, False
+        speed, brake, steering = self.process_frame(frame, depth_data)
+        return speed, brake, steering, False, False
 
     def set_window_visible(self, visible: bool) -> None:
-        """Управляет отображением окна камеры."""
         self.show_window = visible
         if visible and self.zed and self.zed.is_opened():
             if not self.window_created:
@@ -140,7 +131,6 @@ class ZEDCameraInput(InputDevice):
                 pass
 
     def process_frame(self, frame, depth_data):
-        """Обрабатывает кадр и карту глубины для управления."""
         height, width = depth_data.shape
         roi_height = int(height * 0.2)
         roi_width = int(width * 0.2)
@@ -157,19 +147,12 @@ class ZEDCameraInput(InputDevice):
         min_distance = np.min(valid_depth)
         print(f"Минимальное расстояние: {min_distance:.2f} м")
 
-        if min_distance < self.depth_threshold:
-            gas = 0.0
-            brake = 1.0
-            steering = 0.0
-        else:
-            gas = 0.3
-            brake = 0.0
-            steering = 0.0
-
-        return gas, brake, steering
+        speed = 0.0 if min_distance < self.depth_threshold else 0.7
+        brake = 1.0 if min_distance < self.depth_threshold else 0.0
+        steering = 0.0
+        return speed, brake, steering
 
     def close(self) -> None:
-        """Закрывает ZED-камеру и освобождает ресурсы."""
         if self.recording:
             self.toggle_recording()
         if self.zed is not None:

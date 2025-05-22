@@ -1,65 +1,50 @@
-
 import serial
 from typing import Dict
-from .speed import Speed
+from .gear import Gear, GearDirection
+from .arduino_adapter import ArduinoAdapter
 
 class CarController:
     def __init__(self, arduino_port: str = '/dev/ttyUSB0', baud_rate: int = 9600):
         self.arduino = serial.Serial(arduino_port, baud_rate)
-        self.speed_modes: Dict[str, Speed] = {
-            'turtle': Speed(75, 105),
-            'slow': Speed(70, 110),
-            'medium': Speed(45, 120),
-            'fast': Speed(0, 180)
-        }
-        self.current_speed_mode = 'medium'
-        self.steering = 90  # Центр серво
-        self.motor_value = 90  # Остановленный мотор
-        self.default_motor_value = 90
+        self.adapter = ArduinoAdapter(
+            gears={
+                "reverse": Gear(max_speed=25, direction=GearDirection.REVERSE),
+                "turtle": Gear(max_speed=25, direction=GearDirection.FORWARD),
+                "slow": Gear(max_speed=30, direction=GearDirection.FORWARD),
+                "medium": Gear(max_speed=50, direction=GearDirection.FORWARD),
+                "fast": Gear(max_speed=100, direction=GearDirection.FORWARD)
+            },
+            default_gear="turtle"
+        )
+        self.motor_value = 90
+        self.steering = 90
 
-    def set_speed_mode(self, mode: str) -> None:
-        """Устанавливает режим скорости."""
-        if mode in self.speed_modes:
-            self.current_speed_mode = mode
+    def set_gear(self, gear: str) -> None:
+        """Устанавливает передачу."""
+        self.adapter.set_gear(gear)
+
+    def increase_gear(self) -> None:
+        """Увеличивает передачу."""
+        self.adapter.increase_gear()
+
+    def decrease_gear(self) -> None:
+        """Уменьшает передачу."""
+        self.adapter.decrease_gear()
+
+    def update(self, speed: float, brake: float, steering: float) -> None:
+        """Обновляет управление. Brake приоритетнее speed, steering сохраняется."""
+        if brake > 0.0:
+            self.motor_value = 90  # Нейтраль (остановка)
+            # steering остаётся тем, что передано
+            _, self.steering = self.adapter.convert_commands(0.0, steering)
         else:
-            print(f"Неизвестный режим скорости: {mode}. Устанавливается 'medium'.")
-            self.current_speed_mode = 'medium'
-
-    def increase_speed_mode(self) -> None:
-        """Увеличивает режим скорости."""
-        speed_modes = list(self.speed_modes.keys())
-        current_index = speed_modes.index(self.current_speed_mode)
-        if current_index < len(speed_modes) - 1:
-            self.current_speed_mode = speed_modes[current_index + 1]
-            print(f"Режим скорости увеличен: {self.current_speed_mode}")
-        else:
-            print("Вы уже на максимальном режиме!")
-
-    def decrease_speed_mode(self) -> None:
-        """Уменьшает режим скорости."""
-        speed_modes = list(self.speed_modes.keys())
-        current_index = speed_modes.index(self.current_speed_mode)
-        if current_index > 0:
-            self.current_speed_mode = speed_modes[current_index - 1]
-            print(f"Режим скорости уменьшен: {self.current_speed_mode}")
-        else:
-            print("Вы уже на минимальном режиме!")
-
-    def scale_motor_value(self, value: float) -> int:
-        """Масштабирует значение газа или тормоза в зависимости от режима."""
-        speed = self.speed_modes[self.current_speed_mode]
-        return speed.scale_gas(value, self.default_motor_value) if value >= 0 else speed.scale_brake(abs(value), self.default_motor_value)
+            self.motor_value, self.steering = self.adapter.convert_commands(speed, steering)
+        self.send_command(self.motor_value, self.steering)
 
     def send_command(self, motor_value: int, steering_value: int) -> None:
         """Отправляет команду на Arduino."""
         command = f"{motor_value},{steering_value}\n"
         self.arduino.write(command.encode())
-
-    def update(self, gas: float, brake: float, steering_value: float) -> None:
-        """Обновляет управление на основе газа, тормоза и поворота."""
-        self.motor_value = self.scale_motor_value(gas if gas > 0 else -brake)
-        self.steering = 180 if steering_value < -0.5 else 0 if steering_value > 0.5 else 90
-        self.send_command(self.motor_value, self.steering)
 
     def close(self) -> None:
         """Закрывает соединение с Arduino."""
