@@ -16,19 +16,19 @@ class GamepadInput(InputDevice):
         self.rumble_supported = False
 
     def initialize(self) -> None:
-        """Инициализирует геймпад и проверяет вибрацию."""
+        """Initializes the gamepad and checks vibration support."""
         try:
             self.joystick = pygame.joystick.Joystick(self.joystick_index)
             self.joystick.init()
-            print("Геймпад инициализирован")
+            print("Gamepad initialized")
             try:
                 self.joystick.rumble(0.1, 0.1, 100)
                 self.rumble_supported = True
-                print("Вибрация поддерживается")
+                print("Vibration supported")
             except pygame.error:
-                print("Вибрация не поддерживается")
+                print("Vibration not supported")
         except pygame.error as e:
-            raise RuntimeError(f"Ошибка инициализации геймпада: {e}")
+            raise RuntimeError(f"Gamepad initialization error: {e}")
 
     def register_button_action(self, button_id: int, action: Callable[[], None]) -> None:
         self.button_handler.register_action(button_id, action)
@@ -38,7 +38,7 @@ class GamepadInput(InputDevice):
             try:
                 self.joystick.rumble(low_freq, high_freq, duration_ms)
             except pygame.error as e:
-                print(f"Ошибка вибрации: {e}")
+                print(f"Vibration error: {e}")
 
     def vibrate_on_record_start(self) -> None:
         self.vibrate(0.5, 0.5, 300)
@@ -117,4 +117,4 @@ class GamepadInput(InputDevice):
         if self.joystick:
             self.joystick.quit()
             self.joystick = None
-        print("Геймпад отключен")
+        print("Gamepad disconnected")

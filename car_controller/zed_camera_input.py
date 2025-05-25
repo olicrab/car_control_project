@@ -21,6 +21,7 @@ class ZEDCameraInput(InputDevice):
         self.depth_step = 0.05
         self.steering_trim = 0.0
         self.gamepad_input = None
+        self.min_distance = float('inf')  # Последнее минимальное расстояние
 
     def _generate_output_path(self) -> str:
         timestamp = int(time.time())
@@ -41,21 +42,21 @@ class ZEDCameraInput(InputDevice):
 
         err = self.zed.open(init_params)
         if err != sl.ERROR_CODE.SUCCESS:
-            raise RuntimeError(f"Ошибка открытия ZED-камеры: {err}")
+            raise RuntimeError(f"ZED camera initialization error: {err}")
 
         camera_info = self.zed.get_camera_information()
         width = camera_info.camera_configuration.resolution.width
         height = camera_info.camera_configuration.resolution.height
         fps = camera_info.camera_configuration.fps
-        print(f"ZED-камера инициализирована: {width}x{height}, {fps} FPS")
+        print(f"ZED camera initialized: {width}x{height}, {fps} FPS")
 
     def toggle_recording(self) -> None:
         if not self.recording:
             if not self.zed or not self.zed.is_opened():
-                print("Ошибка: ZED-камера не инициализирована")
+                print("Error: ZED camera not initialized")
                 return
             if not os.access(self.output_dir, os.W_OK):
-                print(f"Ошибка: Нет прав на запись в {self.output_dir}")
+                print(f"Error: No write permissions for {self.output_dir}")
                 return
             width = self.zed.get_camera_information().camera_configuration.resolution.width
             height = self.zed.get_camera_information().camera_configuration.resolution.height
@@ -66,9 +67,9 @@ class ZEDCameraInput(InputDevice):
                 self.out = cv2.VideoWriter(self.output_path, fourcc, fps, (width, height))
                 if self.out.isOpened():
                     break
-                print(f"Предупреждение: Кодек {codec} не сработал")
+                print(f"Warning: Codec {codec} failed")
             else:
-                print("Ошибка: Не удалось инициализировать VideoWriter")
+                print("Error: Failed to initialize VideoWriter")
                 self.out = None
                 return
             self.recording = True
@@ -80,7 +81,7 @@ class ZEDCameraInput(InputDevice):
             self.out = None
             self.recording = False
             if not os.path.exists(self.output_path) or os.path.getsize(self.output_path) == 0:
-                print(f"Ошибка: Файл записи пуст или не создан: {self.output_path}")
+                print(f"Error: Recording file empty or not created: {self.output_path}")
             self.output_path = self._generate_output_path()
             if self.gamepad_input:
                 self.gamepad_input.vibrate_on_record_stop()
@@ -96,14 +97,14 @@ class ZEDCameraInput(InputDevice):
 
     def get_input(self) -> Tuple[float, float, float, bool, bool]:
         if not self.zed or not self.zed.is_opened():
-            print("Ошибка: ZED-камера не инициализирована")
+            print("Error: ZED camera not initialized")
             return 0.0, 0.0, 0.0, False, False
 
         image_zed = sl.Mat()
         depth_zed = sl.Mat()
         runtime_params = sl.RuntimeParameters()
         if self.zed.grab(runtime_params) != sl.ERROR_CODE.SUCCESS:
-            print("Ошибка: Не удалось захватить кадр с ZED")
+            print("Error: Failed to grab ZED frame")
             return 0.0, 0.0, 0.0, False, False
 
         self.zed.retrieve_image(image_zed, sl.VIEW.LEFT)
@@ -159,11 +160,12 @@ class ZEDCameraInput(InputDevice):
 
         valid_depth = roi[np.isfinite(roi) & (roi > 0)]
         if valid_depth.size == 0:
+            self.min_distance = float('inf')
             return 0.0, 0.0, 0.0
 
-        min_distance = np.min(valid_depth)
-        speed = 0.0 if min_distance < self.depth_threshold else 0.7
-        brake = 1.0 if min_distance < self.depth_threshold else 0.0
+        self.min_distance = np.min(valid_depth)
+        speed = 0.0 if self.min_distance < self.depth_threshold else 0.7
+        brake = 1.0 if self.min_distance < self.depth_threshold else 0.0
         steering = 0.0
         return speed, brake, steering
 
@@ -180,4 +182,4 @@ class ZEDCameraInput(InputDevice):
                 self.window_created = False
             except cv2.error:
                 pass
-        print("ZED-камера закрыта")
+        print("ZED camera closed")

@@ -11,7 +11,7 @@ class ArduinoAdapter:
         if gear_name in self.gears:
             self.current_gear = gear_name
         else:
-            print(f"Ошибка: Неизвестная передача: {gear_name}")
+            print(f"Error: Unknown gear: {gear_name}")
 
     def increase_gear(self) -> None:
         gear_names = list(self.gears.keys())

@@ -17,41 +17,41 @@ class CarController:
         )
         self.motor_value = 90
         self.steering = 90
-        print(f"Arduino подключен на {arduino_port} с baud rate {baud_rate}")
+        print(f"Arduino connected on {arduino_port} with baud rate {baud_rate}")
 
     def set_gear(self, gear: str) -> None:
-        """Устанавливает передачу."""
+        """Sets the gear."""
         self.adapter.set_gear(gear)
 
     def increase_gear(self) -> None:
-        """Увеличивает передачу."""
+        """Increases the gear."""
         self.adapter.increase_gear()
 
     def decrease_gear(self) -> None:
-        """Уменьшает передачу."""
+        """Decreases the gear."""
         self.adapter.decrease_gear()
 
     def update(self, speed: float, brake: float, steering: float) -> None:
-        """Обновляет управление. Brake использует обратное направление."""
+        """Updates control. Brake uses reverse direction."""
         self.motor_value, self.steering = self.adapter.convert_commands(speed, brake, steering)
         self.send_command(self.motor_value, self.steering)
 
     def send_command(self, motor_value: int, steering_value: int) -> None:
-        """Отправляет команду на Arduino."""
+        """Sends command to Arduino."""
         command = f"{motor_value},{steering_value}\n"
         try:
             self.arduino.write(command.encode())
         except serial.SerialException as e:
-            print(f"Ошибка отправки команды на Arduino: {e}")
+            print(f"Error sending command to Arduino: {e}")
 
     def stop(self) -> None:
-        """Останавливает машинку (мотор = 90, руль = 90)."""
+        """Stops the car (motor = 90, steering = 90)."""
         self.send_command(90, 90)
         self.motor_value = 90
         self.steering = 90
 
     def close(self) -> None:
-        """Закрывает соединение с Arduino."""
-        self.stop()  # Остановка перед закрытием
+        """Closes Arduino connection."""
+        self.stop()
         self.arduino.close()
-        print("Arduino отключен")
+        print("Arduino disconnected")
