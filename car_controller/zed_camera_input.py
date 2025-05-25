@@ -16,12 +16,18 @@ class ZEDCameraInput(InputDevice):
         self.output_path = self._generate_output_path()
         self.show_window = False
         self.window_created = False
-        self.depth_threshold = 0.6
-        self.steering_trim = 0.0  # Корректировка руля
+        self.default_depth_threshold = 0.6
+        self.depth_threshold = self.default_depth_threshold
+        self.depth_step = 0.05
+        self.steering_trim = 0.0
+        self.gamepad_input = None
 
     def _generate_output_path(self) -> str:
         timestamp = int(time.time())
         return os.path.join(self.output_dir, f"output_{timestamp}.avi")
+
+    def set_gamepad_input(self, gamepad_input: 'GamepadInput') -> None:
+        self.gamepad_input = gamepad_input
 
     def initialize(self) -> None:
         self.close()
@@ -41,15 +47,15 @@ class ZEDCameraInput(InputDevice):
         width = camera_info.camera_configuration.resolution.width
         height = camera_info.camera_configuration.resolution.height
         fps = camera_info.camera_configuration.fps
-        print(f"ZED-камера инициализирована. Разрешение: {width}x{height}, FPS: {fps}")
+        print(f"ZED-камера инициализирована: {width}x{height}, {fps} FPS")
 
     def toggle_recording(self) -> None:
         if not self.recording:
             if not self.zed or not self.zed.is_opened():
-                print("Ошибка: ZED-камера не инициализирована, запись невозможна")
+                print("Ошибка: ZED-камера не инициализирована")
                 return
             if not os.access(self.output_dir, os.W_OK):
-                print(f"Ошибка: Нет прав на запись в директорию {self.output_dir}")
+                print(f"Ошибка: Нет прав на запись в {self.output_dir}")
                 return
             width = self.zed.get_camera_information().camera_configuration.resolution.width
             height = self.zed.get_camera_information().camera_configuration.resolution.height
@@ -59,26 +65,34 @@ class ZEDCameraInput(InputDevice):
                 fourcc = cv2.VideoWriter_fourcc(*codec)
                 self.out = cv2.VideoWriter(self.output_path, fourcc, fps, (width, height))
                 if self.out.isOpened():
-                    print(f"VideoWriter открыт с кодеком {codec}, путь: {self.output_path}")
                     break
-                print(f"Предупреждение: Кодек {codec} не сработал, пробуем другой")
+                print(f"Предупреждение: Кодек {codec} не сработал")
             else:
                 print("Ошибка: Не удалось инициализировать VideoWriter")
                 self.out = None
                 return
             self.recording = True
-            print(f"Запись начата: {self.output_path}")
+            if self.gamepad_input:
+                self.gamepad_input.vibrate_on_record_start()
         else:
             if self.out is not None and self.out.isOpened():
                 self.out.release()
-                print("VideoWriter закрыт")
             self.out = None
             self.recording = False
-            if os.path.exists(self.output_path) and os.path.getsize(self.output_path) > 0:
-                print(f"Запись сохранена: {self.output_path}, размер: {os.path.getsize(self.output_path)} байт")
-            else:
+            if not os.path.exists(self.output_path) or os.path.getsize(self.output_path) == 0:
                 print(f"Ошибка: Файл записи пуст или не создан: {self.output_path}")
             self.output_path = self._generate_output_path()
+            if self.gamepad_input:
+                self.gamepad_input.vibrate_on_record_stop()
+
+    def increase_depth_threshold(self) -> None:
+        self.depth_threshold += self.depth_step
+
+    def decrease_depth_threshold(self) -> None:
+        self.depth_threshold = max(0.1, self.depth_threshold - self.depth_step)
+
+    def reset_depth_threshold(self) -> None:
+        self.depth_threshold = self.default_depth_threshold
 
     def get_input(self) -> Tuple[float, float, float, bool, bool]:
         if not self.zed or not self.zed.is_opened():
@@ -98,19 +112,17 @@ class ZEDCameraInput(InputDevice):
         depth_data = depth_zed.get_data()
 
         if self.recording and self.out is not None and self.out.isOpened():
-            self.out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            print(f"Кадр записан: {frame.shape}, путь: {self.output_path}")
+            self.out.write(frame)
 
         if self.show_window and self.window_created:
             depth_display = depth_data.copy()
             depth_display[np.isinf(depth_display)] = 0
             depth_display = cv2.normalize(depth_display, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-            cv2.imshow(self.window_name, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            cv2.imshow(self.window_name, frame)
             cv2.imshow("Depth Map", depth_display)
             cv2.waitKey(1)
 
         speed, brake, steering = self.process_frame(frame, depth_data)
-        # Применяем trim к steering
         steering = max(-0.5, min(0.5, steering + self.steering_trim))
         return speed, brake, steering, False, False
 
@@ -134,9 +146,7 @@ class ZEDCameraInput(InputDevice):
                 pass
 
     def set_steering_trim(self, trim: float) -> None:
-        """Устанавливает значение trim (для синхронизации с геймпадом)."""
         self.steering_trim = trim
-        print(f"Trim установлен: {self.steering_trim:.3f}")
 
     def process_frame(self, frame, depth_data):
         height, width = depth_data.shape
@@ -149,12 +159,9 @@ class ZEDCameraInput(InputDevice):
 
         valid_depth = roi[np.isfinite(roi) & (roi > 0)]
         if valid_depth.size == 0:
-            print("Нет валидных данных глубины в ROI")
             return 0.0, 0.0, 0.0
 
         min_distance = np.min(valid_depth)
-        print(f"Минимальное расстояние: {min_distance:.2f} м")
-
         speed = 0.0 if min_distance < self.depth_threshold else 0.7
         brake = 1.0 if min_distance < self.depth_threshold else 0.0
         steering = 0.0
@@ -173,4 +180,4 @@ class ZEDCameraInput(InputDevice):
                 self.window_created = False
             except cv2.error:
                 pass
-        print("ZED-камера закрыта.")
+        print("ZED-камера закрыта")

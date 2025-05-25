@@ -8,8 +8,7 @@ class CarController:
         self.arduino = serial.Serial(arduino_port, baud_rate)
         self.adapter = ArduinoAdapter(
             gears={
-                "reverse": Gear(max_speed=25, direction=GearDirection.REVERSE),
-                "turtle": Gear(max_speed=25, direction=GearDirection.FORWARD),
+                "turtle": Gear(max_speed=15, direction=GearDirection.FORWARD),
                 "slow": Gear(max_speed=30, direction=GearDirection.FORWARD),
                 "medium": Gear(max_speed=50, direction=GearDirection.FORWARD),
                 "fast": Gear(max_speed=100, direction=GearDirection.FORWARD)
@@ -18,6 +17,7 @@ class CarController:
         )
         self.motor_value = 90
         self.steering = 90
+        print(f"Arduino подключен на {arduino_port} с baud rate {baud_rate}")
 
     def set_gear(self, gear: str) -> None:
         """Устанавливает передачу."""
@@ -39,8 +39,19 @@ class CarController:
     def send_command(self, motor_value: int, steering_value: int) -> None:
         """Отправляет команду на Arduino."""
         command = f"{motor_value},{steering_value}\n"
-        self.arduino.write(command.encode())
+        try:
+            self.arduino.write(command.encode())
+        except serial.SerialException as e:
+            print(f"Ошибка отправки команды на Arduino: {e}")
+
+    def stop(self) -> None:
+        """Останавливает машинку (мотор = 90, руль = 90)."""
+        self.send_command(90, 90)
+        self.motor_value = 90
+        self.steering = 90
 
     def close(self) -> None:
         """Закрывает соединение с Arduino."""
+        self.stop()  # Остановка перед закрытием
         self.arduino.close()
+        print("Arduino отключен")
