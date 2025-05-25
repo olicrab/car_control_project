@@ -1,0 +1,12 @@
+gamepad:
+  autopilot_button: 7
+  debug_mode: true
+
+camera:
+  type: zed
+  resolution: [1280, 720]
+
+control:
+  priority: 
+    - gamepad
+    - autopilot

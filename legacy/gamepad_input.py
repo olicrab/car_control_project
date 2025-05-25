@@ -1,8 +1,20 @@
 import pygame
 import time
+import logging
+import logging.handlers
 from .input_device import InputDevice
 from .button_handler import GamepadButtonHandler
 from typing import Tuple, Callable
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.handlers.RotatingFileHandler('car_control.log', maxBytes=5*1024*1024, backupCount=3)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class GamepadInput(InputDevice):
     def __init__(self, joystick_index: int = 0):
@@ -20,14 +32,17 @@ class GamepadInput(InputDevice):
         try:
             self.joystick = pygame.joystick.Joystick(self.joystick_index)
             self.joystick.init()
-            print("Gamepad initialized")
+            logger.info("Gamepad initialized")
+            # Test vibration
             try:
-                self.joystick.rumble(0.1, 0.1, 100)
+                self.joystick.rumble(0.5, 0.5, 300)
+                time.sleep(0.3)
                 self.rumble_supported = True
-                print("Vibration supported")
-            except pygame.error:
-                print("Vibration not supported")
+                logger.info("Gamepad vibration supported")
+            except pygame.error as e:
+                logger.warning(f"Gamepad vibration not supported: {e}")
         except pygame.error as e:
+            logger.error(f"Gamepad initialization error: {e}")
             raise RuntimeError(f"Gamepad initialization error: {e}")
 
     def register_button_action(self, button_id: int, action: Callable[[], None]) -> None:
@@ -37,25 +52,32 @@ class GamepadInput(InputDevice):
         if self.rumble_supported:
             try:
                 self.joystick.rumble(low_freq, high_freq, duration_ms)
+                logger.debug(f"Vibration triggered: low_freq={low_freq}, high_freq={high_freq}, duration={duration_ms}ms")
+                time.sleep(duration_ms / 1000.0)
             except pygame.error as e:
-                print(f"Vibration error: {e}")
+                logger.error(f"Vibration error: {e}")
 
     def vibrate_on_record_start(self) -> None:
-        self.vibrate(0.5, 0.5, 300)
+        logger.debug("Vibration on record start")
+        self.vibrate(0.7, 0.7, 400)
 
     def vibrate_on_record_stop(self) -> None:
-        self.vibrate(0.5, 0.5, 200)
+        logger.debug("Vibration on record stop")
+        self.vibrate(0.7, 0.7, 300)
         time.sleep(0.3)
-        self.vibrate(0.5, 0.5, 200)
+        self.vibrate(0.7, 0.7, 300)
 
     def adjust_trim_left(self) -> None:
         self.steering_trim -= self.trim_step
+        logger.debug(f"Trim adjusted left: {self.steering_trim:.3f}")
 
     def adjust_trim_right(self) -> None:
         self.steering_trim += self.trim_step
+        logger.debug(f"Trim adjusted right: {self.steering_trim:.3f}")
 
     def reset_trim(self) -> None:
         self.steering_trim = 0.0
+        logger.debug("Trim reset to 0.0")
 
     def get_input(self) -> Tuple[float, float, float, bool, bool]:
         pygame.event.pump()
@@ -92,11 +114,13 @@ class GamepadInput(InputDevice):
         speed = right_trigger
         brake = left_trigger
         steering = max(-0.5, min(0.5, stick_x + self.steering_trim))
+        logger.debug(f"Gamepad input: speed={speed:.2f}, brake={brake:.2f}, steering={steering:.2f}")
 
         return speed, brake, steering, False, False
 
     def set_steering_trim(self, trim: float) -> None:
         self.steering_trim = trim
+        logger.debug(f"Trim set to: {trim:.3f}")
 
     def increase_depth_threshold(self) -> None:
         if hasattr(self, 'camera_input'):
@@ -112,9 +136,10 @@ class GamepadInput(InputDevice):
 
     def set_camera_input(self, camera_input: 'ZEDCameraInput') -> None:
         self.camera_input = camera_input
+        logger.debug("Camera input set for gamepad")
 
     def close(self) -> None:
         if self.joystick:
             self.joystick.quit()
             self.joystick = None
-        print("Gamepad disconnected")
+        logger.info("Gamepad disconnected")
