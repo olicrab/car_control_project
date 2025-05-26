@@ -7,12 +7,14 @@ import logging
 import logging.handlers
 from .input_device import InputDevice
 from typing import Tuple, Optional
+import multiprocessing as mp
 
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
+        logging.StreamHandler(),
         logging.handlers.RotatingFileHandler('car_control.log', maxBytes=5*1024*1024, backupCount=3)
     ]
 )
@@ -35,9 +37,15 @@ class ZEDCameraInput(InputDevice):
         self.gamepad_input = None
         self.min_distance = float('inf')
         self.last_error = ""
-        self.braking = False  # Состояние торможения
-        self.brake_start_time: Optional[float] = None  # Время начала торможения
-        self.brake_duration = 0.5  # Длительность торможения (секунды)
+        self.braking = False
+        self.brake_start_time: Optional[float] = None
+        self.brake_duration = 0.5
+        # Positional tracking attributes
+        self.tracking_enabled = False
+        self.camera_pose = sl.Pose()
+        self.translation = [0.0, 0.0, 0.0]  # x, y, z in meters
+        self.rotation = [0.0, 0.0, 0.0]    # roll, pitch, yaw in radians
+        self.tracking_state = sl.POSITIONAL_TRACKING_STATE.OFF
 
     def _generate_output_path(self) -> str:
         timestamp = int(time.time())
@@ -53,7 +61,7 @@ class ZEDCameraInput(InputDevice):
         init_params = sl.InitParameters()
         init_params.camera_resolution = sl.RESOLUTION.HD720
         init_params.camera_fps = 30
-        init_params.depth_mode = sl.DEPTH_MODE.PERFORMANCE
+        init_params.depth_mode = sl.DEPTH_MODE.NEURAL
         init_params.coordinate_units = sl.UNIT.METER
         init_params.sdk_verbose = 1
 
@@ -62,6 +70,18 @@ class ZEDCameraInput(InputDevice):
             self.last_error = f"ZED camera initialization error: {err}"
             logger.error(self.last_error)
             raise RuntimeError(self.last_error)
+
+        # Enable positional tracking
+        tracking_params = sl.PositionalTrackingParameters()
+        tracking_params.enable_imu_fusion = True
+        tracking_params.mode = sl.POSITIONAL_TRACKING_MODE.GEN_1
+        err = self.zed.enable_positional_tracking(tracking_params)
+        if err != sl.ERROR_CODE.SUCCESS:
+            self.last_error = f"Positional tracking initialization error: {err}"
+            logger.error(self.last_error)
+            raise RuntimeError(self.last_error)
+        self.tracking_enabled = True
+        logger.info("Positional tracking enabled")
 
         camera_info = self.zed.get_camera_information()
         width = camera_info.camera_configuration.resolution.width
@@ -144,16 +164,39 @@ class ZEDCameraInput(InputDevice):
         frame = image_zed.get_data()[:, :, :3]
         depth_data = depth_zed.get_data()
 
+        # Update positional tracking
+        if self.tracking_enabled:
+            self.tracking_state = self.zed.get_position(self.camera_pose, sl.REFERENCE_FRAME.WORLD)
+            if self.tracking_state == sl.POSITIONAL_TRACKING_STATE.OK:
+                translation = self.camera_pose.get_translation().get()
+                rotation = self.camera_pose.get_rotation_vector()
+                self.translation = [round(translation[i], 2) for i in range(3)]
+                self.rotation = [round(rotation[i], 2) for i in range(3)]
+                logger.debug(f"Position: {self.translation}, Rotation: {self.rotation}, Tracking: {self.tracking_state}")
+
         if self.recording and self.out is not None and self.out.isOpened():
             self.out.write(frame)
             logger.debug(f"Frame recorded: {frame.shape}")
 
         if self.show_window and self.window_created:
             depth_display = depth_data.copy()
-            depth_display[np.isinf(depth_display)] = 0
-            depth_display = cv2.normalize(depth_display, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            depth_display[np.isinf(depth_display) | np.isnan(depth_display)] = 0
+
+            valid_depth = depth_display[depth_display > 0]
+            if valid_depth.size > 0:
+                min_depth = np.min(valid_depth)
+                max_depth = np.max(valid_depth)
+                if max_depth > min_depth:
+                    depth_display = np.clip(depth_display, min_depth, max_depth)
+                    depth_display = (255 * (max_depth - depth_display) / (max_depth - min_depth)).astype(np.uint8)
+                else:
+                    depth_display = (depth_display * 0).astype(np.uint8)
+            else:
+                depth_display = (depth_display * 0).astype(np.uint8)
+
+            depth_colored = cv2.applyColorMap(depth_display, cv2.COLORMAP_JET)
             cv2.imshow(self.window_name, frame)
-            cv2.imshow("Depth Map", depth_display)
+            cv2.imshow("Depth Map", depth_colored)
             cv2.waitKey(1)
 
         speed, brake, steering = self.process_frame(frame, depth_data)
@@ -238,6 +281,9 @@ class ZEDCameraInput(InputDevice):
         if self.recording:
             self.toggle_recording()
         if self.zed is not None:
+            if self.tracking_enabled:
+                self.zed.disable_positional_tracking()
+                logger.info("Positional tracking disabled")
             self.zed.close()
             self.zed = None
         if self.window_created:

@@ -28,7 +28,7 @@ class GamepadInput(InputDevice):
         self.rumble_supported = False
 
     def initialize(self) -> None:
-        """Initializes the gamepad and checks vibration support."""
+        """Initializes the gamepad."""
         try:
             self.joystick = pygame.joystick.Joystick(self.joystick_index)
             self.joystick.init()
@@ -116,23 +116,23 @@ class GamepadInput(InputDevice):
         steering = max(-0.5, min(0.5, stick_x + self.steering_trim))
         logger.debug(f"Gamepad input: speed={speed:.2f}, brake={brake:.2f}, steering={steering:.2f}")
 
-        return speed, brake, steering, False, False
+        return speed, brake, steering, False, True
 
     def set_steering_trim(self, trim: float) -> None:
-        self.steering_trim = trim
+        self.steering_trim = float(trim)
         logger.debug(f"Trim set to: {trim:.3f}")
 
     def increase_depth_threshold(self) -> None:
         if hasattr(self, 'camera_input'):
-            self.camera_input.increase_depth_threshold()
+            self.camera_input.increase_depth()
 
     def decrease_depth_threshold(self) -> None:
         if hasattr(self, 'camera_input'):
-            self.camera_input.decrease_depth_threshold()
+            self.camera_input.decrease_depth()
 
     def reset_depth_threshold(self) -> None:
         if hasattr(self, 'camera_input'):
-            self.camera_input.reset_depth_threshold()
+            self.camera_input.reset_depth()
 
     def set_camera_input(self, camera_input: 'ZEDCameraInput') -> None:
         self.camera_input = camera_input

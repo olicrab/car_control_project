@@ -60,5 +60,6 @@ class ArduinoAdapter:
 
         steering_value = int(90 - (steering * 90))
         steering_value = max(0, min(180, steering_value))
+        motor_value = max(80, min(105, motor_value))
         logger.debug(f"Converted commands: motor={motor_value}, steering={steering_value}")
         return motor_value, steering_value
