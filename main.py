@@ -1,135 +1,63 @@
-import time
-import pygame
-import cv2
-import curses
-import logging
-import logging.handlers
-from car_controller.car_controller import CarController
-from car_controller.gamepad_input import GamepadInput
-from car_controller.zed_camera_input import ZEDCameraInput
+import logging.config
+import yaml
+from multiprocessing import Queue, Event
+from processes.process_manager import ProcessManager
+from processes.input_process import InputProcess
+from processes.command_process import CommandProcess
+from processes.arduino_process import ArduinoProcess
+from processes.ui_process import UIProcess
+from application.input_manager import InputManager
+from application.car_controller import CarController
+from application.command_processor import CommandProcessor
+from application.state_manager import StateManager
+from infrastructure.zed_camera import ZEDCameraInput
+from infrastructure.gamepad import GamepadInput
+from infrastructure.arduino import ArduinoAdapter
+from infrastructure.video_recorder import ZEDVideoRecorder
+from infrastructure.config_manager import FileConfigManager
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.handlers.RotatingFileHandler('car_control.log', maxBytes=5*1024*1024, backupCount=3),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+def setup_logging():
+    with open('config/logging_config.yaml', 'r') as f:
+        logging.config.dictConfig(yaml.safe_load(f))
 
-def curses_interface(stdscr, controller, gamepad_input, camera_input, is_gamepad_mode):
-    """Displays parameters and errors in a console interface."""
-    curses.curs_set(0)
-    stdscr.timeout(50)
+def main():
+    setup_logging()
+    logger = logging.getLogger(__name__)
+    logger.info("Starting car control system")
 
-    stdscr.clear()
-    stdscr.addstr(0, 0, "Car Control", curses.A_BOLD)
-    mode = "Gamepad" if is_gamepad_mode else "ZED-Autopilot"
-    stdscr.addstr(2, 0, f"Mode: {mode}")
-    stdscr.addstr(4, 0, f"Speed: {controller.motor_value:3d}")
-    stdscr.addstr(5, 0, f"Gear: {controller.adapter.current_gear}")
-    stdscr.addstr(6, 0, f"Steering: {controller.steering:3d}")
-    stdscr.addstr(7, 0, f"Trim: {gamepad_input.steering_trim:.3f}")
-    stdscr.addstr(8, 0, f"Depth Threshold: {camera_input.depth_threshold:.2f} m")
-    stdscr.addstr(9, 0, f"Min Distance: {camera_input.min_distance:.2f} m")
-    stdscr.addstr(10, 0, f"Recording: {'On' if camera_input.recording else 'Off'}")
-    stdscr.addstr(11, 0, f"Braking: {'On' if camera_input.braking else 'Off'}")
-    stdscr.addstr(13, 0, f"Last Error: {camera_input.last_error or 'None'}")
-    stdscr.addstr(15, 0, "Left Stick: steering, Triggers: throttle/brake, Bumpers: gears")
-    stdscr.addstr(16, 0, "Start: mode, A: record, B: reverse, X: reset trim, Y: reset depth")
-    stdscr.addstr(17, 0, "D-Pad: trim (left/right: ±2), depth (up/down: ±0.05)")
-    stdscr.addstr(18, 0, "Q: exit")
+    config_manager = FileConfigManager('config/config.yaml')
+    config = config_manager.get_config()
 
-    try:
-        stdscr.refresh()
-        return stdscr.getch()
-    except curses.error:
-        logger.error("Curses refresh error")
-        return -1
+    state_manager = StateManager()
+    video_recorder = ZEDVideoRecorder(config['zed']['output_dir'])
+    zed_camera = ZEDCameraInput(video_recorder)
+    gamepad = GamepadInput(config['gamepad']['joystick_index'])
+    arduino = ArduinoAdapter(config['arduino']['port'], config['arduino']['baud_rate'])
 
-def main(stdscr):
-    """Main function with curses interface."""
-    curses.noecho()
-    curses.cbreak()
-    stdscr.keypad(True)
+    input_manager = InputManager(state_manager)
+    input_manager.register_device("gamepad", gamepad)
+    input_manager.register_device("zed", zed_camera)
 
-    pygame.init()
-    logger.info("Pygame initialized")
+    car_controller = CarController(arduino, state_manager)
+    command_queue = Queue()
+    stop_event = Event()
 
-    controller = CarController('/dev/ttyUSB0')
-    gamepad_input = GamepadInput(joystick_index=0)
-    camera_input = ZEDCameraInput()
+    input_process = InputProcess(input_manager, command_queue, stop_event)
+    command_process = CommandProcess(CommandProcessor(input_manager, car_controller, command_queue), stop_event)
+    arduino_process = ArduinoProcess(arduino, Queue(), stop_event)
+    ui_process = UIProcess(state_manager, stop_event)
+
+    process_manager = ProcessManager(input_process, command_process, arduino_process, ui_process)
 
     try:
-        gamepad_input.initialize()
-        camera_input.initialize()
-    except RuntimeError as e:
-        logger.error(f"Initialization error: {e}")
-        camera_input.last_error = f"Initialization error: {e}"
-        controller.stop()
-        controller.close()
-        gamepad_input.close()
-        camera_input.close()
-        pygame.quit()
-        return
-
-    gamepad_input.set_camera_input(camera_input)
-    camera_input.set_gamepad_input(gamepad_input)
-
-    is_gamepad_mode = True
-
-    def toggle_input_mode():
-        nonlocal is_gamepad_mode
-        is_gamepad_mode = not is_gamepad_mode
-        camera_input.set_window_visible(not is_gamepad_mode)
-        if is_gamepad_mode:
-            gamepad_input.set_steering_trim(camera_input.steering_trim)
-        else:
-            camera_input.set_steering_trim(gamepad_input.steering_trim)
-        logger.debug(f"Mode switched to: {'Gamepad' if is_gamepad_mode else 'ZED-Autopilot'}")
-
-    def set_reverse_gear():
-        controller.set_gear("reverse")
-        logger.debug("Reverse gear set")
-
-    gamepad_input.register_button_action(5, controller.increase_gear)
-    gamepad_input.register_button_action(4, controller.decrease_gear)
-    gamepad_input.register_button_action(7, toggle_input_mode)
-    gamepad_input.register_button_action(0, camera_input.toggle_recording)
-    gamepad_input.register_button_action(1, set_reverse_gear)
-    gamepad_input.register_button_action(2, gamepad_input.reset_trim)
-    gamepad_input.register_button_action(3, gamepad_input.reset_depth_threshold)
-
-    try:
-        while True:
-            gamepad_input.get_input()
-            speed, brake, steering, _, _ = gamepad_input.get_input() if is_gamepad_mode else camera_input.get_input()
-            camera_input.get_input()
-            controller.update(speed, brake, steering)
-
-            key = curses_interface(stdscr, controller, gamepad_input, camera_input, is_gamepad_mode)
-            if key == ord('q') or (not is_gamepad_mode and cv2.waitKey(1) & 0xFF == ord('q')):
-                logger.info("Exiting by user request")
-                break
-
-    except Exception as e:
-        logger.error(f"Runtime error: {e}")
-        camera_input.last_error = f"Runtime error: {e}"
+        process_manager.start()
+        while not stop_event.is_set():
+            pass
+    except KeyboardInterrupt:
+        logger.info("Received shutdown signal")
     finally:
-        curses.nocbreak()
-        stdscr.keypad(False)
-        curses.echo()
-        curses.endwin()
-        if camera_input.recording:
-            camera_input.toggle_recording()
-        controller.stop()
-        controller.close()
-        gamepad_input.close()
-        camera_input.close()
-        pygame.quit()
-        logger.info("Program terminated")
+        process_manager.stop()
+        logger.info("System shutdown complete")
 
 if __name__ == "__main__":
-    curses.wrapper(main)
+    main()
