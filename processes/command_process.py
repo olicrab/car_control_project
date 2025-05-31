@@ -1,4 +1,4 @@
-from multiprocessing import Process, Queue, Event
+from multiprocessing import Process, Event
 import logging
 from application.command_processor import CommandProcessor
 
@@ -9,6 +9,7 @@ class CommandProcess(Process):
         super().__init__()
         self.command_processor = command_processor
         self.stop_event = stop_event
+        logger.info("CommandProcess initialized")
 
     def run(self) -> None:
         logger.info("Command process started")
@@ -17,5 +18,6 @@ class CommandProcess(Process):
                 self.command_processor.process()
         except Exception as e:
             logger.error(f"Command process error: {e}")
+            self.command_processor.input_manager.state_manager.update_state(last_error=f"Command process error: {e}")
         finally:
             logger.info("Command process stopped")

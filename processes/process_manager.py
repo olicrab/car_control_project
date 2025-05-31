@@ -1,9 +1,9 @@
-from multiprocessing import Queue, Event
+from multiprocessing import Process, Queue, Event
 import logging
-from .input_process import InputProcess
-from .command_process import CommandProcess
-from .arduino_process import ArduinoProcess
-from .ui_process import UIProcess
+from processes.input_process import InputProcess
+from processes.command_process import CommandProcess
+from processes.arduino_process import ArduinoProcess
+from processes.ui_process import UIProcess
 
 logger = logging.getLogger(__name__)
 
@@ -14,21 +14,24 @@ class ProcessManager:
         self.command_process = command_process
         self.arduino_process = arduino_process
         self.ui_process = ui_process
+        logger.info("ProcessManager initialized")
 
     def start(self) -> None:
         logger.info("Starting processes")
-        self.input_process.start()
+        if self.input_process:
+            self.input_process.start()
         self.command_process.start()
         self.arduino_process.start()
         self.ui_process.start()
 
     def stop(self) -> None:
         logger.info("Stopping processes")
-        self.input_process.terminate()
+        if self.input_process:
+            self.input_process.terminate()
+            self.input_process.join()
         self.command_process.terminate()
         self.arduino_process.terminate()
         self.ui_process.terminate()
-        self.input_process.join()
         self.command_process.join()
         self.arduino_process.join()
         self.ui_process.join()

@@ -10,6 +10,7 @@ class InputProcess(Process):
         self.input_manager = input_manager
         self.command_queue = command_queue
         self.stop_event = stop_event
+        logger.info("InputProcess initialized")
 
     def run(self) -> None:
         logger.info("Input process started")
@@ -20,6 +21,7 @@ class InputProcess(Process):
                 self.command_queue.put(command)
         except Exception as e:
             logger.error(f"Input process error: {e}")
+            self.input_manager.state_manager.update_state(last_error=f"Input process error: {e}")
         finally:
             self.input_manager.close()
             logger.info("Input process stopped")

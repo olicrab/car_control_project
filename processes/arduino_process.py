@@ -10,6 +10,7 @@ class ArduinoProcess(Process):
         self.arduino = arduino
         self.command_queue = command_queue
         self.stop_event = stop_event
+        logger.info("ArduinoProcess initialized")
 
     def run(self) -> None:
         logger.info("Arduino process started")

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Tuple
-from ..entities.command import CarCommand
+from core.entities.command import CarCommand
 
 class InputDevice(ABC):
     @abstractmethod

@@ -1,5 +1,8 @@
 from enum import Enum
 from dataclasses import dataclass
+import logging
+
+logger = logging.getLogger(__name__)
 
 class GearDirection(Enum):
     FORWARD = "forward"
@@ -12,6 +15,7 @@ class Gear:
 
     def scale_speed(self, value: float, neutral_value: int = 90) -> int:
         if not 0 <= value <= 1:
+            logger.error(f"Invalid speed value: {value}, must be between 0 and 1")
             raise ValueError("Speed must be between 0 and 1")
         scaled_speed = int(value * self.max_speed)
         if self.direction == GearDirection.FORWARD:

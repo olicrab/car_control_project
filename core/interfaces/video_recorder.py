@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 class VideoRecorder(ABC):
     @abstractmethod
@@ -6,7 +7,7 @@ class VideoRecorder(ABC):
         pass
 
     @abstractmethod
-    def record_frame(self, frame) -> None:
+    def record_frame(self, frame: Any) -> None:
         pass
 
     @abstractmethod

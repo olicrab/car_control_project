@@ -9,9 +9,11 @@ handlers:
     filename: logs/car_control.log
     maxBytes: 5242880
     backupCount: 3
+    level: DEBUG
   console:
     class: logging.StreamHandler
     formatter: detailed
+    level: DEBUG
 loggers:
   '':
     level: DEBUG
