@@ -1,0 +1,13 @@
+arduino:
+  port: /dev/ttyUSB0
+  baud_rate: 9600
+zed:
+  resolution: HD720
+  fps: 30
+  depth_threshold: 0.6
+  output_dir: logs
+gamepad:
+  joystick_index: 0
+logging:
+  level: DEBUG
+  file: logs/car_control.log
