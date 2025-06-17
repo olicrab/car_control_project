@@ -97,8 +97,6 @@ class ZEDCameraInput(InputDevice):
                 return
             self.recording = True
             logger.info(f"Recording started: {self.output_path}")
-            if self.gamepad_input:
-                self.gamepad_input.vibrate_on_record_start()
         else:
             if self.out is not None and self.out.isOpened():
                 self.out.release()
@@ -110,8 +108,6 @@ class ZEDCameraInput(InputDevice):
                 logger.error(self.last_error)
             self.output_path = self._generate_output_path()
             logger.info("Recording stopped")
-            if self.gamepad_input:
-                self.gamepad_input.vibrate_on_record_stop()
 
     def increase_depth_threshold(self) -> None:
         self.depth_threshold += self.depth_step

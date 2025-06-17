@@ -86,9 +86,10 @@ def main(stdscr):
         camera_input.set_window_visible(not is_gamepad_mode)
         if is_gamepad_mode:
             gamepad_input.set_steering_trim(camera_input.steering_trim)
+            logger.debug("Switched to Gamepad mode")
         else:
             camera_input.set_steering_trim(gamepad_input.steering_trim)
-        logger.debug(f"Mode switched to: {'Gamepad' if is_gamepad_mode else 'ZED-Autopilot'}")
+            logger.debug("Switched to ZED-Autopilot mode")
 
     def set_reverse_gear():
         controller.set_gear("reverse")

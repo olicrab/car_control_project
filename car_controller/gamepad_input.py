@@ -25,47 +25,19 @@ class GamepadInput(InputDevice):
         self.trim_step = 2.0 / 90
         self.prev_dpad = (0, 0)
         self.camera_input = None
-        self.rumble_supported = False
 
     def initialize(self) -> None:
-        """Initializes the gamepad and checks vibration support."""
+        """Initializes the gamepad."""
         try:
             self.joystick = pygame.joystick.Joystick(self.joystick_index)
             self.joystick.init()
             logger.info("Gamepad initialized")
-            # Test vibration
-            try:
-                self.joystick.rumble(0.5, 0.5, 300)
-                time.sleep(0.3)
-                self.rumble_supported = True
-                logger.info("Gamepad vibration supported")
-            except pygame.error as e:
-                logger.warning(f"Gamepad vibration not supported: {e}")
         except pygame.error as e:
             logger.error(f"Gamepad initialization error: {e}")
             raise RuntimeError(f"Gamepad initialization error: {e}")
 
     def register_button_action(self, button_id: int, action: Callable[[], None]) -> None:
         self.button_handler.register_action(button_id, action)
-
-    def vibrate(self, low_freq: float, high_freq: float, duration_ms: int) -> None:
-        if self.rumble_supported:
-            try:
-                self.joystick.rumble(low_freq, high_freq, duration_ms)
-                logger.debug(f"Vibration triggered: low_freq={low_freq}, high_freq={high_freq}, duration={duration_ms}ms")
-                time.sleep(duration_ms / 1000.0)
-            except pygame.error as e:
-                logger.error(f"Vibration error: {e}")
-
-    def vibrate_on_record_start(self) -> None:
-        logger.debug("Vibration on record start")
-        self.vibrate(0.7, 0.7, 400)
-
-    def vibrate_on_record_stop(self) -> None:
-        logger.debug("Vibration on record stop")
-        self.vibrate(0.7, 0.7, 300)
-        time.sleep(0.3)
-        self.vibrate(0.7, 0.7, 300)
 
     def adjust_trim_left(self) -> None:
         self.steering_trim -= self.trim_step
