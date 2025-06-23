@@ -5,30 +5,27 @@ import numpy as np
 from car_controller.car_controller import CarController
 import time
 import math
+from scipy.interpolate import splprep, splev
 
-# Загрузка модели YOLOv8
 model = YOLO("models/cone_detector.pt")
 
-# Цвета для классов
 class_colors = {
-    "Yellow": (0, 255, 255),  # Справа
-    "Blue": (255, 0, 0),  # Слева
-    "Orange": (0, 165, 255)  # Остановка
+    "Yellow": (0, 255, 255),
+    "Blue": (255, 0, 0),
+    "Orange": (0, 165, 255)
 }
 
-# Глобальные параметры
 WINDOW_SIZE = [1280, 720]
-CURRENT_POS = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] - 10)  # Позиция машинки чуть выше нижнего края
-CURRENT_HEADING = -math.pi / 2  # Направление вверх
-BASE_LOOKAHEAD_DISTANCE = 10  # Базовое расстояние в пикселях (~2 м, калибровать)
-FILTER_SIZE = 3  # Увеличено для сглаживания
-KP_STEERING = 0.4  # Чувствительность руления
-MAX_TURN_ANGLE = math.radians(30)
-MIN_ZEROING_ANGLE = math.radians(4)
-BASE_SPEED = 0.5  # Диапазон [0, 1] для CarController
+CURRENT_POS = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] - 50)
+CURRENT_HEADING = -math.pi / 2
+K_CROSS = 0.5  # Уменьшено для стабильности
+K_HEADING = 0.5  # Увеличено для большей реакции
+BASE_SPEED = 0.5
 MIN_SPEED = 0.1
-BRAKE_ASPECT = 0.7  # Увеличено для замедления на поворотах
-ORANGE_STOP_DISTANCE = 1.0  # Метры
+ORANGE_STOP_DISTANCE = 1.0
+SMOOTH_FACTOR = 2.0
+MAX_TURN_ANGLE = math.radians(30)
+MIN_ZEROING_ANGLE = math.radians(1)  # Еще меньше для чувствительности
 
 
 def get_box_distance(depth_data, x1, y1, x2, y2):
@@ -46,84 +43,97 @@ def get_box_distance(depth_data, x1, y1, x2, y2):
     return None
 
 
-def smooth_path(points, filter_size=FILTER_SIZE):
-    if not points or len(points) < 2:
-        return points
-    smoothed = []
-    for i in range(len(points)):
-        start = max(0, i - filter_size // 2)
-        end = min(len(points), i + filter_size // 2 + 1)
-        avg_x = np.mean([p[0] for p in points[start:end]])
-        avg_y = np.mean([p[1] for p in points[start:end]])
-        smoothed.append((avg_x, avg_y))
-    return smoothed
+def build_cone_path(cones):
+    cones = sorted(cones, key=lambda x: x[2] if x[2] is not None else float('inf'))
+    if not cones:
+        return []
+    path = [(c[0], c[1]) for c in cones]
+    if len(path) < 2:
+        return path
+    x, y = zip(*path)
+    try:
+        tck, u = splprep([x, y], s=SMOOTH_FACTOR, k=min(3, len(path) - 1))
+        u_fine = np.linspace(0, 1, max(10, len(path) * 2))
+        x_fine, y_fine = splev(u_fine, tck)
+        return list(zip(x_fine, y_fine))
+    except:
+        return path
 
 
-def pair_cones(blue_cones, yellow_cones):
-    # Сортируем по расстоянию
-    blue_cones = sorted(blue_cones, key=lambda x: x[2] if x[2] is not None else float('inf'))
-    yellow_cones = sorted(yellow_cones, key=lambda x: x[2] if x[2] is not None else float('inf'))
-
-    # Парное соответствие по близости расстояний
-    paired = []
-    min_pairs = min(len(blue_cones), len(yellow_cones))
-    for i in range(min_pairs):
-        blue = blue_cones[i]
-        yellow = yellow_cones[i]
-        center_x = (blue[0] + yellow[0]) / 2
-        center_y = (blue[1] + yellow[1]) / 2
-        avg_distance = (blue[2] + yellow[2]) / 2 if blue[2] is not None and yellow[2] is not None else None
-        paired.append((center_x, center_y, avg_distance))
-
-    # Если одной стороны не хватает, используем противоположную границу
-    if not blue_cones and yellow_cones:
-        for y in yellow_cones[:3]:
-            center_x = (0 + y[0]) / 2
-            center_y = y[1]
-            paired.append((center_x, center_y, y[2]))
-    elif not yellow_cones and blue_cones:
-        for b in blue_cones[:3]:
-            center_x = (b[0] + WINDOW_SIZE[0]) / 2
-            center_y = b[1]
-            paired.append((center_x, center_y, b[2]))
-
-    # Сортируем по расстоянию
-    paired = sorted(paired, key=lambda x: x[2] if x[2] is not None else float('inf'))
-    return [(p[0], p[1]) for p in paired]
+def calculate_trajectory(blue_cones, yellow_cones):
+    blue_path = build_cone_path(blue_cones)
+    yellow_path = build_cone_path(yellow_cones)
+    if not blue_path and yellow_path:
+        blue_path = [(0, y) for _, y in yellow_path]
+    elif not yellow_path and blue_path:
+        yellow_path = [(WINDOW_SIZE[0], y) for _, y in blue_path]
+    elif not blue_path and not yellow_path:
+        return []
+    center_line = []
+    min_len = min(len(blue_path), len(yellow_path))
+    for i in range(min_len):
+        center_x = (blue_path[i][0] + yellow_path[i][0]) / 2
+        center_y = (blue_path[i][1] + yellow_path[i][1]) / 2
+        center_line.append((center_x, center_y))
+    if len(blue_path) > min_len:
+        for i in range(min_len, len(blue_path)):
+            center_x = (blue_path[i][0] + WINDOW_SIZE[0]) / 2
+            center_y = blue_path[i][1]
+            center_line.append((center_x, center_y))
+    elif len(yellow_path) > min_len:
+        for i in range(min_len, len(yellow_path)):
+            center_x = (0 + yellow_path[i][0]) / 2
+            center_y = yellow_path[i][1]
+            center_line.append((center_x, center_y))
+    # Проверка валидности точек
+    center_line = [(x, y) for x, y in center_line if 0 <= x <= WINDOW_SIZE[0] and 0 <= y <= WINDOW_SIZE[1]]
+    return center_line
 
 
-def pure_pursuit_steering(current_pos, current_heading, path, lookahead_distance):
-    # Находим ближайшую точку на траектории
-    if not path:
+def stanley_controller(current_pos, current_heading, path):
+    if not path or len(path) < 2:
         return 0.0, current_pos
+    # Находим ближайшую точку
     distances = [math.sqrt((p[0] - current_pos[0]) ** 2 + (p[1] - current_pos[1]) ** 2) for p in path]
     closest_idx = np.argmin(distances)
+    closest_point = path[closest_idx]
 
-    # Ищем целевую точку на lookahead_distance
-    target_point = path[closest_idx]
-    for i in range(closest_idx, len(path)):
-        dist = math.sqrt((path[i][0] - current_pos[0]) ** 2 + (path[i][1] - current_pos[1]) ** 2)
-        if dist >= lookahead_distance:
-            target_point = path[i]
-            break
+    # Нормализуем поперечную ошибку (в пикселях, делим на ширину кадра)
+    cross_error = distances[closest_idx] / (WINDOW_SIZE[0] / 2)
 
-    # Вычисляем угол поворота (Pure Pursuit)
-    dx = target_point[0] - current_pos[0]
-    dy = target_point[1] - current_pos[1]
-    angle_to_target = math.atan2(dy, dx)
-    steering_angle = angle_to_target - current_heading
-    steering_angle = (steering_angle + math.pi) % (2 * math.pi) - math.pi
-    final_angle = max(-MAX_TURN_ANGLE, min(MAX_TURN_ANGLE, KP_STEERING * steering_angle))
-    if abs(final_angle) < MIN_ZEROING_ANGLE:
-        final_angle = 0
+    # Вычисляем направление траектории
+    path_heading = current_heading
+    if closest_idx < len(path) - 1:
+        dx = path[closest_idx + 1][0] - closest_point[0]
+        dy = path[closest_idx + 1][1] - closest_point[1]
+        if dx != 0 or dy != 0:
+            path_heading = math.atan2(dy, dx)
+    heading_error = (path_heading - current_heading + math.pi) % (2 * math.pi) - math.pi
 
-    return final_angle, target_point
+    # Угол руления
+    steering_angle = K_HEADING * heading_error + K_CROSS * math.atan2(cross_error, 1.0)
+    steering_angle = max(-MAX_TURN_ANGLE, min(MAX_TURN_ANGLE, steering_angle))
+    if abs(steering_angle) < MIN_ZEROING_ANGLE:
+        steering_angle = 0
+
+    print(f"cross_error={cross_error:.2f}, heading_error={heading_error:.2f}, path_heading={path_heading:.2f}")
+    return steering_angle, closest_point
 
 
-def adjust_speed(steering_angle, min_distance):
-    speed = BASE_SPEED * (1 - (abs(steering_angle) / MAX_TURN_ANGLE) ** BRAKE_ASPECT)
+def estimate_curvature(path):
+    if len(path) < 3:
+        return 0.0
+    p1, p2, p3 = path[:3]
+    v1 = np.array([p2[0] - p1[0], p2[1] - p1[1]])
+    v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
+    angle = math.acos(np.clip(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)), -1, 1))
+    return angle / math.radians(180)
+
+
+def adjust_speed(steering_angle, curvature, min_distance):
+    speed = BASE_SPEED * (1 - 0.7 * curvature - 0.3 * (abs(steering_angle) / MAX_TURN_ANGLE))
     if min_distance is not None and min_distance < 2.0:
-        speed *= max(0.5, min_distance / 2.0)  # Замедляемся при близких конусах
+        speed *= max(0.5, min_distance / 2.0)
     return max(MIN_SPEED, speed)
 
 
@@ -167,7 +177,9 @@ def main():
 
     image_zed = sl.Mat()
     depth_zed = sl.Mat()
+    prev_time = time.time()
 
+    global CURRENT_HEADING
     try:
         while True:
             if zed.grab(sl.RuntimeParameters()) == sl.ERROR_CODE.SUCCESS:
@@ -176,7 +188,6 @@ def main():
                 frame = image_zed.get_data()[:, :, :3].copy()
                 depth_data = depth_zed.get_data()
 
-                # Детекция конусов
                 results = model(frame)
                 blue_cones = []
                 yellow_cones = []
@@ -219,26 +230,23 @@ def main():
                     car.stop()
                     break
 
-                # Формируем траекторию
-                center_line = pair_cones(blue_cones, yellow_cones)
-                center_line = smooth_path(center_line)
+                center_line = calculate_trajectory(blue_cones, yellow_cones)
+                steering_angle, target_point = stanley_controller(CURRENT_POS, CURRENT_HEADING, center_line)
+                curvature = estimate_curvature(center_line)
+                speed = adjust_speed(steering_angle, curvature, min_distance)
 
-                # Динамическая настройка lookahead_distance
-                lookahead_distance = BASE_LOOKAHEAD_DISTANCE * (min_distance / 3.0 if min_distance is not None else 1.0)
-                lookahead_distance = max(50, min(lookahead_distance, 200))
+                # Обновляем CURRENT_HEADING
+                current_time = time.time()
+                delta_time = current_time - prev_time
+                prev_time = current_time
+                CURRENT_HEADING += (steering_angle / MAX_TURN_ANGLE) * delta_time * 0.5  # Уменьшено для стабильности
+                CURRENT_HEADING = (CURRENT_HEADING + math.pi) % (2 * math.pi) - math.pi
 
-                # Вычисляем угол поворота (Pure Pursuit)
-                steering_angle, target_point = pure_pursuit_steering(CURRENT_POS, CURRENT_HEADING, center_line,
-                                                                     lookahead_distance)
-                speed = adjust_speed(steering_angle, min_distance)
-
-                # Отрисовка
                 if center_line:
                     draw_colored_path(frame, center_line)
                 cv2.circle(frame, (int(target_point[0]), int(target_point[1])), 8, (0, 0, 255), -1)
                 cv2.circle(frame, (int(CURRENT_POS[0]), int(CURRENT_POS[1])), 10, (255, 255, 255), 2)
 
-                # Управление
                 if not center_line:
                     print("Конусы не обнаружены, движение прямо")
                     car.update(speed=BASE_SPEED, brake=0.0, steering=0.0)
