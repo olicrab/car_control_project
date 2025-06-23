@@ -4,24 +4,37 @@ import cv2
 import numpy as np
 from car_controller.car_controller import CarController
 import time
-
+import math
 
 # Загрузка модели YOLOv8
-model = YOLO("models/cone_detector.pt")  # Укажите путь к вашей модели .pt
+model = YOLO("models/cone_detector.pt")
 
 # Цвета для классов
 class_colors = {
     "Yellow": (0, 255, 255),  # Справа
-    "Blue": (255, 0, 0),      # Слева
-    "Orange": (0, 165, 255)   # Остановка
+    "Blue": (255, 0, 0),  # Слева
+    "Orange": (0, 165, 255)  # Остановка
 }
 
+# Глобальные параметры
+WINDOW_SIZE = [1280, 720]
+CURRENT_POS = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] - 10)  # Позиция машинки чуть выше нижнего края
+CURRENT_HEADING = -math.pi / 2  # Направление вверх
+BASE_LOOKAHEAD_DISTANCE = 10  # Базовое расстояние в пикселях (~2 м, калибровать)
+FILTER_SIZE = 3  # Увеличено для сглаживания
+KP_STEERING = 0.4  # Чувствительность руления
+MAX_TURN_ANGLE = math.radians(30)
+MIN_ZEROING_ANGLE = math.radians(4)
+BASE_SPEED = 0.5  # Диапазон [0, 1] для CarController
+MIN_SPEED = 0.1
+BRAKE_ASPECT = 0.7  # Увеличено для замедления на поворотах
+ORANGE_STOP_DISTANCE = 1.0  # Метры
+
+
 def get_box_distance(depth_data, x1, y1, x2, y2):
-    # Центр бокса
     cx = int((x1 + x2) / 2)
     cy = int((y1 + y2) / 2)
     h, w = depth_data.shape
-    # Область 5x5 вокруг центра, с учетом границ
     x_start = max(cx - 2, 0)
     x_end = min(cx + 3, w)
     y_start = max(cy - 2, 0)
@@ -32,46 +45,108 @@ def get_box_distance(depth_data, x1, y1, x2, y2):
         return float(np.median(valid))
     return None
 
-def calculate_trajectory(blue_cones, yellow_cones, frame_width, frame_height):
-    if not blue_cones or not yellow_cones:
-        return None, []
 
-    # Сортируем конусы по расстоянию (от ближнего к дальнему)
-    blue_cones = sorted(blue_cones, key=lambda x: x[4] if x[4] is not None else float('inf'))
-    yellow_cones = sorted(yellow_cones, key=lambda x: x[4] if x[4] is not None else float('inf'))
+def smooth_path(points, filter_size=FILTER_SIZE):
+    if not points or len(points) < 2:
+        return points
+    smoothed = []
+    for i in range(len(points)):
+        start = max(0, i - filter_size // 2)
+        end = min(len(points), i + filter_size // 2 + 1)
+        avg_x = np.mean([p[0] for p in points[start:end]])
+        avg_y = np.mean([p[1] for p in points[start:end]])
+        smoothed.append((avg_x, avg_y))
+    return smoothed
 
-    # Выбираем пары конусов с близкими расстояниями
-    trajectory_points = []
-    min_pairs = min(len(blue_cones), len(yellow_cones), 30)  # Ограничиваем до 3 пар для плавности
+
+def pair_cones(blue_cones, yellow_cones):
+    # Сортируем по расстоянию
+    blue_cones = sorted(blue_cones, key=lambda x: x[2] if x[2] is not None else float('inf'))
+    yellow_cones = sorted(yellow_cones, key=lambda x: x[2] if x[2] is not None else float('inf'))
+
+    # Парное соответствие по близости расстояний
+    paired = []
+    min_pairs = min(len(blue_cones), len(yellow_cones))
     for i in range(min_pairs):
-        blue_cx = (blue_cones[i][0] + blue_cones[i][2]) / 2
-        yellow_cx = (yellow_cones[i][0] + yellow_cones[i][2]) / 2
-        blue_cy = (blue_cones[i][1] + blue_cones[i][3]) / 2
-        yellow_cy = (yellow_cones[i][1] + yellow_cones[i][3]) / 2
-        # Центр полосы
-        lane_cx = (blue_cx + yellow_cx) / 2
-        lane_cy = (blue_cy + yellow_cy) / 2
-        trajectory_points.append((int(lane_cx), int(lane_cy)))
+        blue = blue_cones[i]
+        yellow = yellow_cones[i]
+        center_x = (blue[0] + yellow[0]) / 2
+        center_y = (blue[1] + yellow[1]) / 2
+        avg_distance = (blue[2] + yellow[2]) / 2 if blue[2] is not None and yellow[2] is not None else None
+        paired.append((center_x, center_y, avg_distance))
 
-    if not trajectory_points:
-        return None, []
+    # Если одной стороны не хватает, используем противоположную границу
+    if not blue_cones and yellow_cones:
+        for y in yellow_cones[:3]:
+            center_x = (0 + y[0]) / 2
+            center_y = y[1]
+            paired.append((center_x, center_y, y[2]))
+    elif not yellow_cones and blue_cones:
+        for b in blue_cones[:3]:
+            center_x = (b[0] + WINDOW_SIZE[0]) / 2
+            center_y = b[1]
+            paired.append((center_x, center_y, b[2]))
 
-    # Вычисляем угол траектории на основе ближайшей точки
-    nearest_point = trajectory_points[0]
-    frame_center_x = frame_width / 2
-    deviation = (nearest_point[0] - frame_center_x) / (frame_width / 2)  # Нормализованное отклонение [-1, 1]
+    # Сортируем по расстоянию
+    paired = sorted(paired, key=lambda x: x[2] if x[2] is not None else float('inf'))
+    return [(p[0], p[1]) for p in paired]
 
-    # Для змейки: учитываем направление траектории
-    if len(trajectory_points) > 1:
-        dx = trajectory_points[1][0] - trajectory_points[0][0]
-        dy = trajectory_points[1][1] - trajectory_points[0][1]
-        angle = np.arctan2(dy, dx)  # Угол в радианах
-        deviation += 0.3 * np.tan(angle)  # Усиливаем поворот в зависимости от угла траектории
 
-    return deviation, trajectory_points
+def pure_pursuit_steering(current_pos, current_heading, path, lookahead_distance):
+    # Находим ближайшую точку на траектории
+    if not path:
+        return 0.0, current_pos
+    distances = [math.sqrt((p[0] - current_pos[0]) ** 2 + (p[1] - current_pos[1]) ** 2) for p in path]
+    closest_idx = np.argmin(distances)
+
+    # Ищем целевую точку на lookahead_distance
+    target_point = path[closest_idx]
+    for i in range(closest_idx, len(path)):
+        dist = math.sqrt((path[i][0] - current_pos[0]) ** 2 + (path[i][1] - current_pos[1]) ** 2)
+        if dist >= lookahead_distance:
+            target_point = path[i]
+            break
+
+    # Вычисляем угол поворота (Pure Pursuit)
+    dx = target_point[0] - current_pos[0]
+    dy = target_point[1] - current_pos[1]
+    angle_to_target = math.atan2(dy, dx)
+    steering_angle = angle_to_target - current_heading
+    steering_angle = (steering_angle + math.pi) % (2 * math.pi) - math.pi
+    final_angle = max(-MAX_TURN_ANGLE, min(MAX_TURN_ANGLE, KP_STEERING * steering_angle))
+    if abs(final_angle) < MIN_ZEROING_ANGLE:
+        final_angle = 0
+
+    return final_angle, target_point
+
+
+def adjust_speed(steering_angle, min_distance):
+    speed = BASE_SPEED * (1 - (abs(steering_angle) / MAX_TURN_ANGLE) ** BRAKE_ASPECT)
+    if min_distance is not None and min_distance < 2.0:
+        speed *= max(0.5, min_distance / 2.0)  # Замедляемся при близких конусах
+    return max(MIN_SPEED, speed)
+
+
+def interpolate_color(distance, max_distance=150):
+    normalized_distance = min(distance / max_distance, 1)
+    red = int(255 * normalized_distance)
+    green = int(255 * (1 - normalized_distance))
+    return (0, green, red)
+
+
+def draw_colored_path(frame, path):
+    if len(path) < 2:
+        return frame
+    for i in range(1, len(path)):
+        p1 = path[i - 1]
+        p2 = path[i]
+        distance = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+        color = interpolate_color(distance)
+        cv2.line(frame, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), color, 2)
+    return frame
+
 
 def main():
-    # Инициализация ZED-камеры
     zed = sl.Camera()
     init_params = sl.InitParameters()
     init_params.camera_resolution = sl.RESOLUTION.HD720
@@ -85,7 +160,6 @@ def main():
 
     print("ZED-камера успешно инициализирована")
 
-    # Инициализация контроллера автомобиля
     arduino_port = "COM3"
     baud_rate = 9600
     car = CarController(arduino_port=arduino_port, baud_rate=baud_rate)
@@ -107,6 +181,7 @@ def main():
                 blue_cones = []
                 yellow_cones = []
                 stop = False
+                min_distance = float('inf')
 
                 for result in results:
                     boxes = result.boxes
@@ -120,22 +195,23 @@ def main():
                         color = class_colors.get(label, (0, 255, 0))
                         distance = get_box_distance(depth_data, x1, y1, x2, y2)
 
-                        # Рисуем маркер в центре конуса
-                        cx = int((x1 + x2) / 2)
-                        cy = int((y1 + y2) / 2)
-                        cv2.circle(frame, (cx, cy), 5, color, -1)  # Круг радиусом 5
+                        cx = (x1 + x2) / 2
+                        cy = (y1 + y2) / 2
+                        cv2.circle(frame, (int(cx), int(cy)), 5, color, -1)
                         label_text = f"{distance:.2f}m" if distance is not None else "?m"
-                        cv2.putText(frame, label_text, (cx + 10, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                        cv2.putText(frame, label_text, (int(cx) + 10, int(cy) - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-                        # Сохраняем данные о конусах
-                        if label == "Blue":  # Слева
-                            blue_cones.append((x1, y1, x2, y2, distance))
-                        elif label == "Yellow":  # Справа
-                            yellow_cones.append((x1, y1, x2, y2, distance))
-                        elif label == "Orange" and distance is not None and distance < 1.0:
+                        if distance is not None and distance < min_distance:
+                            min_distance = distance
+
+                        if label == "Blue":
+                            blue_cones.append((cx, cy, distance))
+                        elif label == "Yellow":
+                            yellow_cones.append((cx, cy, distance))
+                        elif label == "Orange" and distance is not None and distance < ORANGE_STOP_DISTANCE:
                             stop = True
 
-                # Если обнаружен оранжевый конус ближе 1 метра, останавливаемся
                 if stop:
                     print("Обнаружен оранжевый конус, остановка")
                     car.update(speed=0.0, brake=1.0, steering=0.0)
@@ -143,28 +219,32 @@ def main():
                     car.stop()
                     break
 
-                # Вычисляем траекторию
-                deviation, trajectory_points = calculate_trajectory(blue_cones, yellow_cones, frame.shape[1], frame.shape[0])
+                # Формируем траекторию
+                center_line = pair_cones(blue_cones, yellow_cones)
+                center_line = smooth_path(center_line)
 
-                # Отрисовка траектории
-                if trajectory_points:
-                    for i in range(len(trajectory_points) - 1):
-                        cv2.line(frame, trajectory_points[i], trajectory_points[i + 1], (0, 255, 0), 2)
-                    # Отмечаем ближайшую точку траектории
-                    cv2.circle(frame, trajectory_points[0], 8, (0, 0, 255), -1)
+                # Динамическая настройка lookahead_distance
+                lookahead_distance = BASE_LOOKAHEAD_DISTANCE * (min_distance / 3.0 if min_distance is not None else 1.0)
+                lookahead_distance = max(50, min(lookahead_distance, 200))
 
-                # Управление машинкой
-                if deviation is None:
-                    print("Конусы не обнаружены, продолжаем движение прямо")
-                    car.update(speed=0.3, brake=0.0, steering=0.0)
+                # Вычисляем угол поворота (Pure Pursuit)
+                steering_angle, target_point = pure_pursuit_steering(CURRENT_POS, CURRENT_HEADING, center_line,
+                                                                     lookahead_distance)
+                speed = adjust_speed(steering_angle, min_distance)
+
+                # Отрисовка
+                if center_line:
+                    draw_colored_path(frame, center_line)
+                cv2.circle(frame, (int(target_point[0]), int(target_point[1])), 8, (0, 0, 255), -1)
+                cv2.circle(frame, (int(CURRENT_POS[0]), int(CURRENT_POS[1])), 10, (255, 255, 255), 2)
+
+                # Управление
+                if not center_line:
+                    print("Конусы не обнаружены, движение прямо")
+                    car.update(speed=BASE_SPEED, brake=0.0, steering=0.0)
                 else:
-                    # Пропорциональное управление с учетом кривизны
-                    steering = -deviation * 0.7  # Усиление для поворота
-                    # Ограничиваем угол поворота
+                    steering = steering_angle / MAX_TURN_ANGLE
                     steering = max(min(steering, 1.0), -1.0)
-                    # Скорость зависит от расстояния до ближайшего конуса
-                    min_distance = min([c[4] for c in blue_cones + yellow_cones if c[4] is not None], default=5.0)
-                    speed = 0.3 if min_distance > 2.0 else 0.2
                     print(f"Управление: скорость={speed:.2f}, угол={steering:.2f}, расстояние={min_distance:.2f}m")
                     car.update(speed=speed, brake=0.0, steering=steering)
 
@@ -175,10 +255,10 @@ def main():
                 print("Ошибка: не удалось захватить кадр")
     finally:
         zed.close()
-        car.stop()
         car.close()
         cv2.destroyAllWindows()
         print("ZED-камера и Arduino отключены")
+
 
 if __name__ == "__main__":
     main()
