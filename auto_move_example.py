@@ -5,7 +5,6 @@ import numpy as np
 from car_controller.car_controller import CarController
 import time
 import math
-from scipy.interpolate import splprep, splev
 import os
 
 # Универсальный путь к модели
@@ -14,33 +13,32 @@ if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"Модель не найдена: {MODEL_PATH}")
 model = YOLO(MODEL_PATH)
 
+# Цвета для визуализации
 class_colors = {
     "Yellow": (0, 255, 255),
     "Blue": (255, 0, 0),
     "Orange": (0, 165, 255)
 }
 
+# Константы
 WINDOW_SIZE = [1280, 720]
 CURRENT_POS = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] - 50)
 CURRENT_HEADING = -math.pi / 2
-BASE_SPEED = 1.0
-MIN_SPEED = 0.8
-MAX_SPEED = 1.2
-ORANGE_STOP_DISTANCE = 0.4
-SMOOTH_FACTOR = 1.5
-MAX_TURN_ANGLE = math.radians(30)
-MIN_ZEROING_ANGLE = math.radians(1)
-MIN_PATH_POINTS = 3
-OFFSET_DISTANCE = 200
-LOOKAHEAD_BASE = 150
-K_CURVATURE = 0.5
-CONF_THRESHOLD = 0.5
-MAX_DISTANCE = 5.0  # Максимальное расстояние для учета конусов
-ORANGE_CONFIRM_FRAMES = 3  # Количество кадров для подтверждения оранжевого конуса
+BASE_SPEED = 0.8  # Базовая скорость (м/с)
+MIN_SPEED = 0.5   # Минимальная скорость (м/с)
+MAX_SPEED = 1.0   # Максимальная скорость (м/с)
+ORANGE_STOP_DISTANCE = 0.4  # Порог остановки для оранжевого конуса (м)
+MAX_TURN_ANGLE = math.radians(30)  # Максимальный угол поворота
+MIN_ZEROING_ANGLE = math.radians(1)  # Минимальный угол для обнуления
+LOOKAHEAD_DISTANCE = 150  # Дистанция до целевой точки (пиксели)
+KP_STEERING = 0.8  # Коэффициент пропорциональности для угла поворота
+BRAKE_ASPECT = 2.0  # Влияние угла поворота на снижение скорости
+FILTER_SIZE = 3    # Размер окна для сглаживания траектории
+CONF_THRESHOLD = 0.5  # Порог уверенности для обнаружения конусов
+RED_CONES_STOP_THRESHOLD = 1  # Количество оранжевых конусов для остановки
 
+# Хранилище последней траектории
 last_valid_path = []
-orange_cone_count = 0  # Счетчик кадров для подтверждения оранжевого конуса
-
 
 def get_box_distance(depth_data, x1, y1, x2, y2):
     cx = int((x1 + x2) / 2)
@@ -56,164 +54,87 @@ def get_box_distance(depth_data, x1, y1, x2, y2):
         return float(np.median(valid))
     return None
 
+def balance_cones(blue_cones, yellow_cones):
+    """Балансировка количества синих и желтых конусов."""
+    if len(blue_cones) == 0 and len(yellow_cones) > 0:
+        blue_cones = [(0, yellow[1]) for yellow in yellow_cones]
+    elif len(yellow_cones) == 0 and len(blue_cones) > 0:
+        yellow_cones = [(WINDOW_SIZE[0], blue[1]) for blue in blue_cones]
+    return blue_cones, yellow_cones
 
-def filter_cones(cones):
-    """Фильтрация конусов по расстоянию и координатам."""
-    filtered = []
-    for cone in cones:
-        x, y, distance = cone
-        if distance is not None and distance < MAX_DISTANCE:
-            if 0 <= x <= WINDOW_SIZE[0] and 0 <= y <= WINDOW_SIZE[1]:
-                filtered.append(cone)
-    return filtered
-
-
-def build_cone_path(cones):
-    if len(cones) < 2:
-        return [(c[0], c[1]) for c in cones] if cones else []
-    cones = sorted(cones, key=lambda x: x[2] if x[2] is not None else float('inf'))
-    path = [(c[0], c[1]) for c in cones]
-    x, y = zip(*path)
-    try:
-        tck, u = splprep([x, y], s=SMOOTH_FACTOR, k=min(3, len(path) - 1))
-        u_fine = np.linspace(0, 1, max(10, len(path) * 2))
-        x_fine, y_fine = splev(u_fine, tck)
-        return [(x, y) for x, y in zip(x_fine, y_fine) if 0 <= x <= WINDOW_SIZE[0] and 0 <= y <= WINDOW_SIZE[1]]
-    except:
-        return path
-
-
-def calculate_trajectory(blue_cones, yellow_cones, min_distance):
-    global last_valid_path
-    blue_cones = filter_cones(blue_cones)
-    yellow_cones = filter_cones(yellow_cones)
-    
-    blue_path = build_cone_path(blue_cones)
-    yellow_path = build_cone_path(yellow_cones)
-
-    if not blue_path and yellow_path:
-        offset = OFFSET_DISTANCE * max(0.5, min(1.0, min_distance / 2.0))
-        center_line = [(max(0, p[0] - offset), p[1]) for p in yellow_path]
-    elif not yellow_path and blue_path:
-        offset = OFFSET_DISTANCE * max(0.5, min(1.0, min_distance / 2.0))
-        center_line = [(min(WINDOW_SIZE[0], p[0] + offset), p[1]) for p in blue_path]
-    elif not blue_path and not yellow_path:
-        return last_valid_path
-    else:
-        center_line = []
-        min_len = min(len(blue_path), len(yellow_path))
-        for i in range(min_len):
-            center_x = (blue_path[i][0] + yellow_path[i][0]) / 2
-            center_y = (blue_path[i][1] + yellow_path[i][1]) / 2
-            center_line.append((center_x, center_y))
-        if len(blue_path) > min_len:
-            for i in range(min_len, len(blue_path)):
-                center_x = (blue_path[i][0] + WINDOW_SIZE[0]) / 2
-                center_y = blue_path[i][1]
-                center_line.append((center_x, center_y))
-        elif len(yellow_path) > min_len:
-            for i in range(min_len, len(yellow_path)):
-                center_x = (0 + yellow_path[i][0]) / 2
-                center_y = yellow_path[i][1]
-                center_line.append((center_x, center_y))
-
-    center_line = [(x, y) for x, y in center_line if 0 <= x <= WINDOW_SIZE[0] and 0 <= y <= WINDOW_SIZE[1]]
-    if len(center_line) >= MIN_PATH_POINTS:
-        last_valid_path = center_line
+def calculate_center_line(blue_cones, yellow_cones):
+    """Вычисление центральной линии между конусами."""
+    center_line = []
+    min_len = min(len(blue_cones), len(yellow_cones))
+    for i in range(min_len):
+        center_x = (blue_cones[i][0] + yellow_cones[i][0]) / 2
+        center_y = (blue_cones[i][1] + yellow_cones[i][1]) / 2
+        center_line.append((center_x, center_y))
     return center_line
 
+def smooth_path(cones, filter_size=FILTER_SIZE):
+    """Сглаживание траектории путем усреднения координат."""
+    if len(cones) < 2:
+        return cones
+    smoothed_cones = []
+    for i in range(len(cones)):
+        start = max(0, i - filter_size // 2)
+        end = min(len(cones), i + filter_size // 2 + 1)
+        avg_x = np.mean([cone[0] for cone in cones[start:end]])
+        avg_y = np.mean([cone[1] for cone in cones[start:end]])
+        smoothed_cones.append((int(avg_x), int(avg_y)))
+    return smoothed_cones
 
-def stanley_controller(current_pos, current_heading, path, speed, min_distance, k_stanley=0.5, epsilon=1e-3):
-    if not path or len(path) < MIN_PATH_POINTS:
-        return 0.0, current_pos
+def find_target_point(center_line, current_position):
+    """Поиск целевой точки на расстоянии LOOKAHEAD_DISTANCE."""
+    if not center_line:
+        return current_position
+    for point in center_line:
+        distance = math.sqrt((point[0] - current_position[0])**2 + (point[1] - current_position[1])**2)
+        if distance >= LOOKAHEAD_DISTANCE:
+            return point
+    return center_line[-1] if center_line else current_position
 
-    # Адаптивный lookahead
-    lookahead = LOOKAHEAD_BASE * max(0.5, min(1.0, min_distance / 2.0))
-    
-    # Найти ближайшую точку на траектории
-    dists = [math.hypot(p[0] - current_pos[0], p[1] - current_pos[1]) for p in path]
-    min_idx = int(np.argmin(dists))
-    
-    # Найти точку lookahead
-    target_idx = min_idx
-    for i in range(min_idx, len(path)):
-        if math.hypot(path[i][0] - current_pos[0], path[i][1] - current_pos[1]) > lookahead:
-            target_idx = i
-            break
-    target_point = path[target_idx]
+def calculate_steering_angle(current_position, current_heading, target_point):
+    """Вычисление угла поворота для достижения целевой точки."""
+    dx = target_point[0] - current_position[0]
+    dy = target_point[1] - current_position[1]
+    angle_to_target = math.atan2(dy, dx)
+    steering_angle = angle_to_target - current_heading
+    steering_angle = (steering_angle + math.pi) % (2 * math.pi) - math.pi
+    final_angle = max(-MAX_TURN_ANGLE, min(MAX_TURN_ANGLE, KP_STEERING * steering_angle))
+    if abs(final_angle) < MIN_ZEROING_ANGLE:
+        final_angle = 0
+    return final_angle
 
-    # Вектор направления траектории
-    if target_idx < len(path) - 1:
-        next_point = path[target_idx + 1]
-    else:
-        next_point = path[target_idx]
-    path_dx = next_point[0] - target_point[0]
-    path_dy = next_point[1] - target_point[1]
-    path_yaw = math.atan2(path_dy, path_dx)
-
-    # Heading error
-    heading_error = (path_yaw - current_heading + math.pi) % (2 * math.pi) - math.pi
-
-    # Cross-track error
-    dx = target_point[0] - current_pos[0]
-    dy = target_point[1] - current_pos[1]
-    cross_track_error = math.sin(path_yaw) * dx - math.cos(path_yaw) * dy
-
-    # Адаптивный коэффициент k_stanley
-    k_stanley_adapted = k_stanley * max(0.5, min(1.0, min_distance / 2.0))
-    
-    # Stanley control law
-    steering_angle = heading_error + math.atan2(k_stanley_adapted * cross_track_error, speed + epsilon)
-    steering_angle = max(-MAX_TURN_ANGLE, min(MAX_TURN_ANGLE, steering_angle))
-    if abs(steering_angle) < MIN_ZEROING_ANGLE:
-        steering_angle = 0
-    print(f"Stanley: heading_error={heading_error:.2f}, cross_track_error={cross_track_error:.2f}, steering={steering_angle:.2f}")
-    return steering_angle, target_point
-
-
-def estimate_curvature(path):
-    if len(path) < 3:
-        return 0.0
-    p1, p2, p3 = path[:3]
-    v1 = np.array([p2[0] - p1[0], p2[1] - p1[1]])
-    v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
-    norm_v1 = np.linalg.norm(v1)
-    norm_v2 = np.linalg.norm(v2)
-    if norm_v1 == 0 or norm_v2 == 0:
-        return 0.0
-    angle = math.acos(np.clip(np.dot(v1, v2) / (norm_v1 * norm_v2), -1, 1))
-    return angle / math.radians(180)
-
-
-def adjust_speed(steering_angle, curvature, min_distance):
-    norm_speed = BASE_SPEED * (1 - 0.6 * curvature - 0.3 * (abs(steering_angle) / MAX_TURN_ANGLE))
+def adjust_speed(steering_angle, min_distance):
+    """Регулировка скорости в зависимости от угла поворота и расстояния."""
+    speed = BASE_SPEED * (1 - (abs(steering_angle) / MAX_TURN_ANGLE)**BRAKE_ASPECT)
     if min_distance is not None and min_distance < 2.0:
-        norm_speed *= max(0.4, min_distance / 2.0)
-    norm_speed = max(0.0, min(1.0, norm_speed))
-    scaled_speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * norm_speed
-    return scaled_speed
-
+        speed *= max(0.5, min_distance / 2.0)
+    return max(MIN_SPEED, min(MAX_SPEED, speed))
 
 def interpolate_color(distance, max_distance=150):
+    """Интерполяция цвета для визуализации траектории."""
     normalized_distance = min(distance / max_distance, 1)
     red = int(255 * normalized_distance)
     green = int(255 * (1 - normalized_distance))
     return (0, green, red)
 
-
-def draw_colored_path(frame, path):
-    if len(path) < 2:
+def draw_colored_path(frame, center_line):
+    """Отрисовка траектории с цветом, зависящим от расстояния."""
+    if len(center_line) < 2:
         return frame
-    for i in range(1, len(path)):
-        p1 = path[i - 1]
-        p2 = path[i]
-        distance = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+    for i in range(1, len(center_line)):
+        p1 = center_line[i - 1]
+        p2 = center_line[i]
+        distance = math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
         color = interpolate_color(distance)
         cv2.line(frame, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), color, 2)
     return frame
 
-
 def main():
+    # Инициализация ZED-камеры
     zed = sl.Camera()
     init_params = sl.InitParameters()
     init_params.camera_resolution = sl.RESOLUTION.HD720
@@ -226,6 +147,8 @@ def main():
         return
 
     print("ZED-камера успешно инициализирована")
+
+    # Инициализация Arduino
     arduino_port = "/dev/ttyUSB0"
     baud_rate = 9600
     car = CarController(arduino_port=arduino_port, baud_rate=baud_rate)
@@ -235,7 +158,7 @@ def main():
     depth_zed = sl.Mat()
     prev_time = time.time()
 
-    global CURRENT_HEADING, last_valid_path, orange_cone_count
+    global CURRENT_HEADING, last_valid_path
     try:
         while True:
             if zed.grab(sl.RuntimeParameters()) == sl.ERROR_CODE.SUCCESS:
@@ -244,10 +167,11 @@ def main():
                 frame = image_zed.get_data()[:, :, :3].copy()
                 depth_data = depth_zed.get_data()
 
+                # Обнаружение конусов
                 results = model(frame)
                 blue_cones = []
                 yellow_cones = []
-                stop = False
+                orange_cones = []
                 min_distance = float('inf')
 
                 for result in results:
@@ -273,48 +197,61 @@ def main():
                             min_distance = distance
 
                         if label == "Blue":
-                            blue_cones.append((cx, cy, distance))
+                            blue_cones.append((cx, cy))
                         elif label == "Yellow":
-                            yellow_cones.append((cx, cy, distance))
-                        elif label == "Orange" and distance is not None and distance < ORANGE_STOP_DISTANCE:
-                            orange_cone_count += 1
-                            if orange_cone_count >= ORANGE_CONFIRM_FRAMES:
-                                stop = True
-                        else:
-                            orange_cone_count = max(0, orange_cone_count - 1)
+                            yellow_cones.append((cx, cy))
+                        elif label == "Orange":
+                            orange_cones.append((cx, cy, distance))
 
-                if stop:
+                # Проверка на остановку
+                if any(distance is not None and distance < ORANGE_STOP_DISTANCE for _, _, distance in orange_cones):
                     print("Обнаружен оранжевый конус, остановка")
                     car.update(speed=0.0, brake=1.0, steering=0.0)
                     time.sleep(1)
                     car.stop()
                     break
 
-                center_line = calculate_trajectory(blue_cones, yellow_cones, min_distance)
-                speed = adjust_speed(0, 0, min_distance)
-                steering_angle, target_point = stanley_controller(CURRENT_POS, CURRENT_HEADING, center_line, speed, min_distance)
-                curvature = estimate_curvature(center_line)
-                speed = adjust_speed(steering_angle, curvature, min_distance)
+                # Сглаживание и балансировка конусов
+                blue_cones = smooth_path(blue_cones)
+                yellow_cones = smooth_path(yellow_cones)
+                blue_cones, yellow_cones = balance_cones(blue_cones, yellow_cones)
 
+                # Построение центральной линии
+                center_line = calculate_center_line(blue_cones, yellow_cones)
+                if center_line:
+                    last_valid_path = center_line
+
+                # Поиск целевой точки
+                target_point = find_target_point(center_line if center_line else last_valid_path, CURRENT_POS)
+
+                # Вычисление угла поворота
+                steering_angle = calculate_steering_angle(CURRENT_POS, CURRENT_HEADING, target_point)
+
+                # Регулировка скорости
+                speed = adjust_speed(steering_angle, min_distance)
+
+                # Обновление направления
                 current_time = time.time()
                 delta_time = current_time - prev_time
                 prev_time = current_time
                 CURRENT_HEADING += (steering_angle / MAX_TURN_ANGLE) * delta_time * 0.5
                 CURRENT_HEADING = (CURRENT_HEADING + math.pi) % (2 * math.pi) - math.pi
 
-                if center_line:
-                    draw_colored_path(frame, center_line)
+                # Визуализация
+                draw_colored_path(frame, center_line if center_line else last_valid_path)
                 cv2.circle(frame, (int(target_point[0]), int(target_point[1])), 8, (0, 0, 255), -1)
                 cv2.circle(frame, (int(CURRENT_POS[0]), int(CURRENT_POS[1])), 10, (255, 255, 255), 2)
 
+                # Вывод информации на кадр
                 text_speed = f"Speed: {speed:.2f} m/s"
-                text_steering = f"Angle: {steering_angle * 180 / 3.1415:.1f}o"
+                text_steering = f"Angle: {math.degrees(steering_angle):.1f}°"
                 cv2.putText(frame, text_speed, (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
                 cv2.putText(frame, text_steering, (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
 
-                if len(center_line) < MIN_PATH_POINTS and not last_valid_path:
+                # Отправка команд на Arduino
+                if not center_line and not last_valid_path:
                     print("Недостаточно точек и нет сохраненной траектории, движение прямо")
-                    car.update(speed=BASE_SPEED * 0.5, brake=0.0, steering=0.0)
+                    car.update(speed=MIN_SPEED, brake=0.0, steering=0.0)
                     arduino_cmd_text = f"CMD: motor={car.motor_value}, steering={car.steering}"
                 else:
                     steering = steering_angle / MAX_TURN_ANGLE
@@ -324,6 +261,7 @@ def main():
                     arduino_cmd_text = f"CMD: motor={car.motor_value}, steering={car.steering}"
 
                 cv2.putText(frame, arduino_cmd_text, (30, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+
                 cv2.imshow("YOLOv8 + Trajectory (ZED)", frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
@@ -334,7 +272,6 @@ def main():
         car.close()
         cv2.destroyAllWindows()
         print("ZED-камера и Arduino отключены")
-
 
 if __name__ == "__main__":
     main()
