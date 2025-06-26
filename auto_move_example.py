@@ -18,9 +18,10 @@ class_colors = {
 WINDOW_SIZE = [1280, 720]
 CURRENT_POS = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] - 50)
 CURRENT_HEADING = -math.pi / 2
-BASE_SPEED = 0.5
-MIN_SPEED = 0.1
-ORANGE_STOP_DISTANCE = 1.0
+BASE_SPEED = 1
+MIN_SPEED = 0.9
+MAX_SPEED = 1  # Максимальная скорость (можно менять)
+ORANGE_STOP_DISTANCE = 0.4  # Порог остановки по оранжевому конусу (в метрах)
 SMOOTH_FACTOR = 1.5
 MAX_TURN_ANGLE = math.radians(30)
 MIN_ZEROING_ANGLE = math.radians(1)
@@ -28,6 +29,7 @@ MIN_PATH_POINTS = 3
 OFFSET_DISTANCE = 200
 LOOKAHEAD_BASE = 150  # Базовая дистанция lookahead в пикселях
 K_CURVATURE = 0.5  # Коэффициент влияния кривизны на угол
+CONF_THRESHOLD = 0.5 # Порог уверенности для обнаружения конусов
 
 # Хранилище последней траектории
 last_valid_path = []
@@ -100,40 +102,38 @@ def calculate_trajectory(blue_cones, yellow_cones, min_distance):
     return center_line
 
 
-def pure_pursuit_controller(current_pos, current_heading, path, min_distance):
+def stanley_controller(current_pos, current_heading, path, speed, k_stanley=0.5, epsilon=1e-3):
     if not path or len(path) < MIN_PATH_POINTS:
         return 0.0, current_pos
 
-    # Адаптивный lookahead
-    lookahead = LOOKAHEAD_BASE * max(0.5, min(1.0, min_distance / 2.0)) if min_distance is not None else LOOKAHEAD_BASE
+    # Найти ближайшую точку на траектории
+    dists = [math.hypot(p[0] - current_pos[0], p[1] - current_pos[1]) for p in path]
+    min_idx = int(np.argmin(dists))
+    target_point = path[min_idx]
 
-    # Находим точку lookahead
-    target_point = path[0]
-    min_dist = float('inf')
-    target_idx = 0
-    for i, p in enumerate(path):
-        dist = math.sqrt((p[0] - current_pos[0]) ** 2 + (p[1] - current_pos[1]) ** 2)
-        if abs(dist - lookahead) < min_dist:
-            min_dist = abs(dist - lookahead)
-            target_point = p
-            target_idx = i
+    # Вектор направления траектории в ближайшей точке
+    if min_idx < len(path) - 1:
+        next_point = path[min_idx + 1]
+    else:
+        next_point = path[min_idx]
+    path_dx = next_point[0] - target_point[0]
+    path_dy = next_point[1] - target_point[1]
+    path_yaw = math.atan2(path_dy, path_dx)
 
-    # Вычисляем угол к цели
+    # Heading error (разница между направлением машины и траекторией)
+    heading_error = (path_yaw - current_heading + math.pi) % (2 * math.pi) - math.pi
+
+    # Cross-track error (знак определяется направлением)
     dx = target_point[0] - current_pos[0]
     dy = target_point[1] - current_pos[1]
-    target_angle = math.atan2(dy, dx)
-    heading_error = (target_angle - current_heading + math.pi) % (2 * math.pi) - math.pi
+    cross_track_error = math.sin(path_yaw) * dx - math.cos(path_yaw) * dy
 
-    # Учитываем кривизну траектории
-    curvature = estimate_curvature(path[max(0, target_idx - 1):target_idx + 2]) if target_idx > 0 else 0.0
-    steering_angle = heading_error + K_CURVATURE * curvature * np.sign(heading_error)
-
+    # Stanley control law
+    steering_angle = heading_error + math.atan2(k_stanley * cross_track_error, speed + epsilon)
     steering_angle = max(-MAX_TURN_ANGLE, min(MAX_TURN_ANGLE, steering_angle))
     if abs(steering_angle) < MIN_ZEROING_ANGLE:
         steering_angle = 0
-
-    print(
-        f"heading_error={heading_error:.2f}, curvature={curvature:.2f}, target_dist={min_dist:.2f}, path_len={len(path)}")
+    print(f"Stanley: heading_error={heading_error:.2f}, cross_track_error={cross_track_error:.2f}, steering={steering_angle:.2f}")
     return steering_angle, target_point
 
 
@@ -148,10 +148,14 @@ def estimate_curvature(path):
 
 
 def adjust_speed(steering_angle, curvature, min_distance):
-    speed = BASE_SPEED * (1 - 0.8 * curvature - 0.4 * (abs(steering_angle) / MAX_TURN_ANGLE))
+    # 1. Вычисляем нормированную скорость (0..1)
+    norm_speed = BASE_SPEED * (1 - 0.8 * curvature - 0.4 * (abs(steering_angle) / MAX_TURN_ANGLE))
     if min_distance is not None and min_distance < 2.0:
-        speed *= max(0.5, min_distance / 2.0)
-    return max(MIN_SPEED, speed)
+        norm_speed *= max(0.5, min_distance / 2.0)
+    norm_speed = max(0.0, min(1.0, norm_speed))
+    # 2. Масштабируем в диапазон MIN_SPEED-MAX_SPEED
+    scaled_speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * norm_speed
+    return scaled_speed
 
 
 def interpolate_color(distance, max_distance=150):
@@ -190,7 +194,7 @@ def main():
     arduino_port = "COM3"
     baud_rate = 9600
     car = CarController(arduino_port=arduino_port, baud_rate=baud_rate)
-    car.set_gear("medium")
+    car.set_gear("turtle")
 
     image_zed = sl.Mat()
     depth_zed = sl.Mat()
@@ -215,7 +219,7 @@ def main():
                     boxes = result.boxes
                     for box in boxes:
                         conf = float(box.conf[0])
-                        if conf < 0.8:
+                        if conf < CONF_THRESHOLD:
                             continue
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         cls = int(box.cls[0])
@@ -248,9 +252,11 @@ def main():
                     break
 
                 center_line = calculate_trajectory(blue_cones, yellow_cones, min_distance)
-                steering_angle, target_point = pure_pursuit_controller(CURRENT_POS, CURRENT_HEADING, center_line,
-                                                                       min_distance)
+                # Сначала вычисляем предварительную скорость (нулевой угол)
+                speed = adjust_speed(0, 0, min_distance)
+                steering_angle, target_point = stanley_controller(CURRENT_POS, CURRENT_HEADING, center_line, speed)
                 curvature = estimate_curvature(center_line)
+                # Пересчитываем скорость с учетом найденного steering_angle
                 speed = adjust_speed(steering_angle, curvature, min_distance)
 
                 current_time = time.time()
@@ -264,14 +270,25 @@ def main():
                 cv2.circle(frame, (int(target_point[0]), int(target_point[1])), 8, (0, 0, 255), -1)
                 cv2.circle(frame, (int(CURRENT_POS[0]), int(CURRENT_POS[1])), 10, (255, 255, 255), 2)
 
+                # === ВЫВОД НА КАДР: скорость и угол поворота ===
+                text_speed = f"Speed: {speed:.2f} m/s"
+                text_steering = f"Angle: {steering_angle * 180 / 3.1415:.1f}o"
+                cv2.putText(frame, text_speed, (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 2)
+                cv2.putText(frame, text_steering, (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 2)
+
                 if len(center_line) < MIN_PATH_POINTS and not last_valid_path:
                     print("Недостаточно точек и нет сохраненной траектории, движение прямо")
                     car.update(speed=BASE_SPEED * 0.5, brake=0.0, steering=0.0)
+                    arduino_cmd_text = f"CMD: motor={car.motor_value}, steering={car.steering}"
                 else:
                     steering = steering_angle / MAX_TURN_ANGLE
                     steering = max(min(steering, 1.0), -1.0)
                     print(f"Управление: скорость={speed:.2f}, угол={steering:.2f}, расстояние={min_distance:.2f}m")
                     car.update(speed=speed, brake=0.0, steering=steering)
+                    arduino_cmd_text = f"CMD: motor={car.motor_value}, steering={car.steering}"
+
+                # Вывод команды на кадр зелёным цветом
+                cv2.putText(frame, arduino_cmd_text, (30, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 2)
 
                 cv2.imshow("YOLOv8 + Trajectory (ZED)", frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):

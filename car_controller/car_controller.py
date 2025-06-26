@@ -22,7 +22,7 @@ class CarController:
             self.arduino = serial.Serial(arduino_port, baud_rate)
             self.adapter = ArduinoAdapter(
                 gears={
-                    "turtle": Gear(max_speed=15, direction=GearDirection.FORWARD),
+                    "turtle": Gear(max_speed=9, direction=GearDirection.FORWARD),
                     "slow": Gear(max_speed=30, direction=GearDirection.FORWARD),
                     "medium": Gear(max_speed=50, direction=GearDirection.FORWARD),
                     "fast": Gear(max_speed=100, direction=GearDirection.FORWARD)

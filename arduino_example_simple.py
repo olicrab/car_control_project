@@ -12,23 +12,23 @@ def main():
 
         # Пример управления
         print("Установка передачи на 'medium'")
-        car.set_gear("medium")
+        car.set_gear("turtle")
         time.sleep(1)
 
         print("Увеличение скорости")
-        car.update(speed=0.5, brake=0.0, steering=0.0)  # Половина скорости, без тормоза, без поворота
+        car.update(speed=1, brake=0.0, steering=0.0)  # Половина скорости, без тормоза, без поворота
+        time.sleep(2)
+
+        print("Поворот налево")
+        car.update(speed=1, brake=0.0, steering=-0.5)  # Поворот направо
+        time.sleep(2)
+
+        print("Прямо")
+        car.update(speed=1, brake=0.0, steering=0)  # Поворот направо
         time.sleep(2)
 
         print("Поворот направо")
-        car.update(speed=0.5, brake=0.0, steering=-0.5)  # Поворот направо
-        time.sleep(2)
-
-        print("Поворот направо")
-        car.update(speed=0.5, brake=0.0, steering=0)  # Поворот направо
-        time.sleep(2)
-
-        print("Поворот направо")
-        car.update(speed=0.5, brake=0.0, steering=0.5)  # Поворот направо
+        car.update(speed=1, brake=0.0, steering=0.5)  # Поворот направо
         time.sleep(2)
 
         print("Торможение")
