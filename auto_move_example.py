@@ -17,8 +17,8 @@ model = YOLO(MODEL_PATH)
 WINDOW_SIZE = (1280, 720)
 CURRENT_POS = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] - 50)
 CURRENT_HEADING = -math.pi / 2
-BASE_SPEED = 0.8  # Скорость 0–1, масштабируется в CarController
-MIN_SPEED = 0.5
+BASE_SPEED = 0.95  # Скорость 0–1, масштабируется в CarController
+MIN_SPEED = 0.9
 MAX_TURN_ANGLE = math.radians(30)
 ORANGE_STOP_DISTANCE = 0.4  # м
 LOOKAHEAD_DISTANCE = 150  # пиксели
@@ -33,17 +33,29 @@ COLORS = {
     "Orange": (0, 165, 255)
 }
 
-def get_cone_distance(depth_data, box):
+def get_cone_distance(depth_data, box, cx, cy):
     """Получение расстояния до конуса."""
-    x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
-    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
     h, w = depth_data.shape
-    roi = depth_data[max(cy - 5, 0):min(cy + 6, h), max(cx - 5, 0):min(cx + 6, w)]  # Увеличен ROI
+    roi = depth_data[max(cy - 5, 0):min(cy + 6, h), max(cx - 5, 0):min(cx + 6, w)]
     valid = roi[np.isfinite(roi) & (roi > 0)]
-    return float(np.median(valid)) if valid.size > 0 else None
+    return float(np.median(valid)) if valid.size > 4 else None  # Минимум 4 валидных пикселя
 
-def detect_cones(frame, depth_data):
-    """Обнаружение и классификация конусов."""
+def correct_cone_coordinates(cx, cy, depth, camera_params):
+    """Коррекция координат конуса для центральной перспективы."""
+    if depth is None or depth <= 0:
+        return cx, cy
+    try:
+        fx = camera_params.left_cam.fx
+        baseline = camera_params.stereo_transform.get_translation().tx  # Базовая линия (м)
+        disparity = baseline * fx / depth
+        cx_corrected = cx - disparity / 2  # Смещение к центру стереопары
+        return cx_corrected, cy
+    except AttributeError:
+        print("Ошибка: некорректные параметры калибровки, используются исходные координаты")
+        return cx, cy
+
+def detect_cones(frame, depth_data, camera_params):
+    """Обнаружение и классификация конусов с коррекцией координат."""
     results = model(frame)
     blue_cones, yellow_cones, orange_cones = [], [], []
     min_distance = float('inf')
@@ -53,8 +65,10 @@ def detect_cones(frame, depth_data):
             if float(box.conf[0]) < CONF_THRESHOLD:
                 continue
             label = model.names[int(box.cls[0])]
-            cx, cy = map(int, [(box.xyxy[0][0] + box.xyxy[0][2]) / 2, (box.xyxy[0][1] + box.xyxy[0][3]) / 2])
-            distance = get_cone_distance(depth_data, box)
+            x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            distance = get_cone_distance(depth_data, box, cx, cy)
+            cx, cy = correct_cone_coordinates(cx, cy, distance, camera_params)
 
             color = COLORS.get(label, (0, 255, 0))
             cv2.circle(frame, (int(cx), int(cy)), 5, color, -1)
@@ -117,7 +131,7 @@ def calculate_steering_angle(current_pos, current_heading, target_point):
 
 def adjust_speed(steering_angle, min_distance):
     """Регулировка скорости."""
-    speed = BASE_SPEED * (1 - abs(steering_angle) / MAX_TURN_ANGLE)
+    speed = BASE_SPEED * (1 - abs(steering_angle) / MAX_TURN_ANGLE * 0.5)  # Уменьшено влияние угла
     if min_distance and min_distance < 2.0:
         speed *= max(0.5, min_distance / 2.0)
     return max(MIN_SPEED, speed)
@@ -144,6 +158,9 @@ def main():
         print("Ошибка: не удалось открыть ZED")
         return
 
+    # Получение параметров калибровки
+    camera_params = zed.get_camera_information().camera_configuration.calibration_parameters
+
     # Инициализация Arduino
     car = CarController(arduino_port="/dev/ttyUSB0", baud_rate=9600)
     car.set_gear("turtle")
@@ -165,7 +182,7 @@ def main():
             depth_data = depth_zed.get_data()
 
             # Обнаружение конусов
-            blue_cones, yellow_cones, orange_cones, min_distance = detect_cones(frame, depth_data)
+            blue_cones, yellow_cones, orange_cones, min_distance = detect_cones(frame, depth_data, camera_params)
 
             # Остановка при оранжевом конусе
             if any(distance and distance < ORANGE_STOP_DISTANCE for _, _, distance in orange_cones):
@@ -180,11 +197,10 @@ def main():
             yellow_cones = smooth_path(yellow_cones)
             blue_cones, yellow_cones = balance_cones(blue_cones, yellow_cones)
             center_line = calculate_center_line(blue_cones, yellow_cones)
-            if center_line:
+            if len(center_line) >= 2:  # Минимум 2 точки для траектории
                 last_valid_path = center_line
-                
-            global CURRENT_HEADING
 
+            global CURRENT_HEADING
             # Управление
             target_point = find_target_point(center_line or last_valid_path, CURRENT_POS)
             steering_angle = calculate_steering_angle(CURRENT_POS, CURRENT_HEADING, target_point)
