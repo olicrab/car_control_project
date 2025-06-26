@@ -6,8 +6,13 @@ from car_controller.car_controller import CarController
 import time
 import math
 from scipy.interpolate import splprep, splev
+import os
 
-model = YOLO("models/cone_detector.pt")
+# Универсальный путь к модели (относительно текущего файла)
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "cone_detector.pt")
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError(f"Модель не найдена: {MODEL_PATH}")
+model = YOLO(MODEL_PATH)
 
 class_colors = {
     "Yellow": (0, 255, 255),
@@ -178,6 +183,14 @@ def draw_colored_path(frame, path):
 
 
 def main():
+    # === РЕКОМЕНДАЦИИ ДЛЯ LINUX ===
+    # 1. Проверьте, что Arduino подключена (обычно /dev/ttyUSB0 или /dev/ttyACM0)
+    # 2. Добавьте пользователя в группу dialout: sudo usermod -aG dialout $USER
+    # 3. Перезайдите в систему после этого
+    # 4. Убедитесь, что ZED SDK и pyzed.sl установлены
+    # 5. Для OpenCV окон: sudo apt install libgtk2.0-dev pkg-config
+    # 6. Запускайте из корня проекта, чтобы пути к моделям были корректны
+
     zed = sl.Camera()
     init_params = sl.InitParameters()
     init_params.camera_resolution = sl.RESOLUTION.HD720
@@ -191,7 +204,8 @@ def main():
 
     print("ZED-камера успешно инициализирована")
 
-    arduino_port = "COM3"
+    # === ВАЖНО: порт Arduino для Linux ===
+    arduino_port = "/dev/ttyUSB0"  # или /dev/ttyACM0, проверьте через ls /dev/tty* до и после подключения
     baud_rate = 9600
     car = CarController(arduino_port=arduino_port, baud_rate=baud_rate)
     car.set_gear("turtle")
