@@ -1,5 +1,10 @@
+"""Абстрактный интерфейс источника управляющих команд: определяет набор методов
+для устройств ввода (геймпад, камеры и др.), которые используются основным
+контроллером."""
+
 from abc import ABC, abstractmethod
 from typing import Tuple
+
 
 class InputDevice(ABC):
     @abstractmethod

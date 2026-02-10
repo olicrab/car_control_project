@@ -1,3 +1,7 @@
+"""Адаптер между высокоуровневыми командами скорости/тормоза/поворота и
+протоколом Arduino: управляет передачами и преобразует значения в PWM для
+мотора и руля."""
+
 import logging
 import logging.handlers
 from typing import Dict, Tuple

@@ -1,9 +1,15 @@
+"""Модель передач: перечисление направления движения и класс, который
+масштабирует нормализованную скорость (0–1) в PWM-значения для Arduino
+с учётом передачи и направления (вперёд/назад)."""
+
 from enum import Enum
 from typing import Tuple
+
 
 class GearDirection(Enum):
     FORWARD = "forward"
     REVERSE = "reverse"
+
 
 class Gear:
     def __init__(self, max_speed: int, direction: GearDirection):

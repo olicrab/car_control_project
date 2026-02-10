@@ -1,10 +1,13 @@
+"""Пример использования модели YOLO с ZED-камерой для детекции дорожных
+конусов без управления автомобилем."""
+
 from ultralytics import YOLO
 import pyzed.sl as sl
 import cv2
 import numpy as np
 
-# Загрузка модели YOLOv8 (.pt файл)
-model = YOLO("models/cone_detector.pt")  # Укажите путь к вашей модели .pt
+
+model = YOLO("models/cone_detector.pt")
 
 # Определение цветов для классов (BGR формат для OpenCV)
 class_colors = {

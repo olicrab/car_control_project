@@ -1,3 +1,6 @@
+"""Обработка кнопок: абстрактный обработчик и реализация для
+геймпада, вызывающая зарегистрированные callback-и по нажатию."""
+
 from abc import ABC, abstractmethod
 from typing import Callable, Dict
 

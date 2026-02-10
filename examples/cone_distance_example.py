@@ -1,10 +1,13 @@
+"""Пример детекции конусов моделью YOLO с использованием карты
+глубины ZED-камеры для оценки расстояния до каждого конуса."""
+
 from ultralytics import YOLO
 import pyzed.sl as sl
 import cv2
 import numpy as np
 
-# Загрузка модели YOLOv8 (.pt файл)
-model = YOLO("models/cone_detector.pt")  # Укажите путь к вашей модели .pt
+
+model = YOLO("models/cone_detector.pt")
 
 class_colors = {
     "Yellow": (0, 255, 255),

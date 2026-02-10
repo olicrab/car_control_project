@@ -1,3 +1,7 @@
+"""Высокоуровневый контроллер автомобиля: открывает Serial-соединение с
+Arduino, использует ArduinoAdapter и управляет отправкой команд мотора и
+руля, а также выбором передачи."""
+
 import serial
 import logging
 import logging.handlers

@@ -1,8 +1,13 @@
+"""Источник видеосигнала от обычной USB-камеры: инициализирует захват,
+опционально показывает и записывает видео, а также предоставляет заглушку
+для логики автопилота."""
+
 import cv2
 import time
 import os
 from .input_device import InputDevice
 from typing import Tuple
+
 
 class CameraInput(InputDevice):
     def __init__(self, device: int = 0):

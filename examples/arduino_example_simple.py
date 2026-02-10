@@ -1,5 +1,9 @@
+"""Простой пример использования CarController для управления автомобилем
+через Arduino по заранее заданной последовательности команд."""
+
 from car_controller.car_controller import CarController
 import time
+
 
 def main():
     # Укажите COM-порт, к которому подключена Arduino (например, "COM3")
